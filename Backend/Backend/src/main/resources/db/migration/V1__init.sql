@@ -1,0 +1,1 @@
+-- Initial schema baseline. Business tables will be added in later migrations.

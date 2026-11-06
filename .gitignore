@@ -1,0 +1,95 @@
+# ==========================================
+# Environment variables and secrets
+# ==========================================
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+
+# Spring Boot local configuration and secrets
+Backend/Backend/src/main/resources/application.properties
+Backend/Backend/src/main/resources/application-*.properties
+**/*.secret.properties
+
+# ==========================================
+# Node.js / React
+# ==========================================
+**/node_modules/
+Frontend/dist/
+Frontend/dev-dist/
+**/.vite/
+
+# Package manager logs
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# ==========================================
+# Java / Maven / Spring Boot
+# ==========================================
+**/target/
+.mvn/wrapper/maven-wrapper.jar
+
+# Keep Maven build output ignored
+target/
+
+# ==========================================
+# IDEs and editors
+# ==========================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.iws
+*.iml
+*.ipr
+.classpath
+.factorypath
+.project
+.settings/
+.springBeans
+.sts4-cache
+.apt_generated
+
+# ==========================================
+# Operating system files
+# ==========================================
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ==========================================
+# Logs, temporary files, databases
+# ==========================================
+**/*.log
+Backend/Backend/startup-error.txt
+*.sqlite
+*.sqlite3
+*.db
+*.tmp
+*.temp
+
+# ==========================================
+# Test and coverage output
+# ==========================================
+coverage/
+**/coverage/
+
+# ==========================================
+# Project-specific files
+# ==========================================
+Backend.zip
+compose.yaml
+HELP.md
+
+# ==========================================
+# Other build output
+# ==========================================
+build/
+dist/
+nbbuild/
+nbdist/
+.gradle/

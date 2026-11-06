@@ -1,0 +1,7 @@
+target
+.git
+.env
+.env.*
+src/main/resources/application-*.properties
+*.log
+startup-error.txt
