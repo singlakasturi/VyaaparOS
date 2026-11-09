@@ -1,13 +1,14 @@
-export async function loadRetailerCatalogue({ retailerId, category, query, fetchCategories, fetchProducts, cacheCatalog, getCachedCatalog }) {
+export async function loadRetailerCatalogue({ retailerId, category, query, page: pageNumber = 0, size = 20, fetchCategories, fetchProducts, cacheCatalog, getCachedCatalog }) {
   try {
-    const [categories, page] = await Promise.all([
+    const [categories, productPage] = await Promise.all([
       fetchCategories(retailerId),
-      fetchProducts({ retailerId, category: category || undefined, q: query.trim() || undefined, size: 100 }),
+      fetchProducts({ retailerId, category: category || undefined, q: query.trim() || undefined, page: pageNumber, size }),
     ])
-    const result = { categories: Array.isArray(categories) ? categories : [], products: page?.content || [] }
-    if (cacheCatalog) await cacheCatalog(retailerId, result.products, result.categories)
+    const result = { categories: Array.isArray(categories) ? categories : [], products: productPage?.content || [], page: productPage?.number ?? pageNumber, totalPages: productPage?.totalPages ?? 1, hasNext: productPage?.hasNext ?? false }
+    if (cacheCatalog && pageNumber === 0) await cacheCatalog(retailerId, result.products, result.categories)
     return result
   } catch (error) {
+    if (error?.status !== 0) throw error
     if (!getCachedCatalog) throw error
     const cached = await getCachedCatalog(retailerId)
     if (!cached) throw error
@@ -18,7 +19,7 @@ export async function loadRetailerCatalogue({ retailerId, category, query, fetch
       const matchesQuery = !normalizedQuery || `${product.name || ''} ${product.sku || ''}`.toLowerCase().includes(normalizedQuery)
       return matchesCategory && matchesQuery
     })
-    return { categories: cached.categories || [], products, stale: true }
+    return { categories: cached.categories || [], products, stale: true, hasNext: false, totalPages: 1, page: 0 }
   }
 }
 
@@ -81,11 +82,26 @@ export function getOrderHistoryRows(orders) {
     id: order.id,
     reference: order.orderNumber || `Order ${String(order.id).slice(0, 8)}`,
     status: order.status || 'UNKNOWN',
+    fulfillmentStatus: order.fulfillmentStatus || 'NOT_STARTED',
+    fulfillmentStatus: order.fulfillmentStatus || 'NOT_STARTED',
     createdAt: order.createdAt,
     itemCount: order.items?.length || 0,
     amount: order.finalAmount,
     currency: order.currency,
   }))
+}
+
+export function canRequestCancellation(order, requests = []) {
+  const allowedOrderStatus=['SUBMITTED','CREDIT_HOLD','APPROVED'].includes(order?.status)
+  const allowedFulfillment=['NOT_STARTED','PREPARING'].includes(order?.fulfillmentStatus || 'NOT_STARTED')
+  const existing=(requests || []).some((request)=>request.requestType==='CANCELLATION' && ['PENDING','APPROVED'].includes(request.status))
+  return allowedOrderStatus && allowedFulfillment && !existing
+}
+
+export function canRequestReturn(order, requests = []) {
+  const allowedOrderStatus=['APPROVED','TALLY_EXPORTED'].includes(order?.status)
+  const existing=(requests || []).some((request)=>request.requestType==='RETURN' && ['PENDING','APPROVED'].includes(request.status))
+  return allowedOrderStatus && order?.fulfillmentStatus==='DELIVERED' && !existing
 }
 
 export function getIndicativeCartTotals(items = []) {

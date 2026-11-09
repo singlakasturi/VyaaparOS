@@ -1,3 +1,5 @@
 package com.vyapaaros.order.dto;
 
-public record OrderDeskActionRequest(String reason) {}
+import jakarta.validation.constraints.Size;
+
+public record OrderDeskActionRequest(@Size(max = 1000) String reason) {}

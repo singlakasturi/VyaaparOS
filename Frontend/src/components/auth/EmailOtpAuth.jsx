@@ -225,7 +225,7 @@ function EmailOtpAuth() {
   const handleContinue = () => {
     completeSignIn(authResponse)
     const from = location.state?.from
-    const destination = from ? `${from.pathname}${from.search || ''}` : '/retailer'
+    const destination = from ? `${from.pathname}${from.search || ''}` : '/workspace'
     navigate(destination, { replace: true })
   }
 

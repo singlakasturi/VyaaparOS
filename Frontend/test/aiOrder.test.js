@@ -24,7 +24,8 @@ describe('AI Order Assistant Services and Business Logic', () => {
   it('requires explicit user confirmation before parsed items can be applied', () => {
     const items = [
       { selectedProductId: 'p1', paidCases: 5, resolutionStatus: 'MATCHED', confirmed: false },
-      { selectedProductId: 'p2', paidCases: 2, resolutionStatus: 'MATCHED', confirmed: true },
+      { selectedProductId: 'p2', paidCases: 2, resolutionStatus: 'MATCHED', confirmed: true, unit: 'CASE' },
+      { selectedProductId: 'p5', paidCases: 1, resolutionStatus: 'MATCHED', confirmed: true },
       { selectedProductId: 'p3', paidCases: 1, resolutionStatus: 'AMBIGUOUS', confirmed: true },
       { selectedProductId: 'p4', paidCases: 3, resolutionStatus: 'MATCHED', confirmed: true, removed: true },
     ]

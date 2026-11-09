@@ -5,6 +5,7 @@ import com.vyapaaros.catalog.repository.ProductRepository;
 import com.vyapaaros.common.exception.*;
 import com.vyapaaros.common.exception.InsufficientStockException.StockIssue;
 import com.vyapaaros.inventory.repository.InventoryRepository;
+import com.vyapaaros.inventory.service.InventoryMovementService;
 import com.vyapaaros.order.dto.*;
 import com.vyapaaros.order.entity.*;
 import com.vyapaaros.order.repository.*;
@@ -17,6 +18,7 @@ import com.vyapaaros.schemes.dto.SchemeEvaluation;
 import com.vyapaaros.schemes.service.SchemeResolutionService;
 import com.vyapaaros.user.entity.User;
 import com.vyapaaros.user.repository.UserRepository;
+import com.vyapaaros.notification.service.NotificationService;
 import java.math.*;
 import java.time.Instant;
 import java.util.*;
@@ -37,6 +39,8 @@ public class OrderService {
     private final SchemeResolutionService schemes;
     private final InventoryRepository inventory;
     private final ProductRepository products;
+    private final NotificationService notifications;
+    private final InventoryMovementService inventoryMovements;
 
     public OrderService(
         OrderRepository o,
@@ -49,6 +53,23 @@ public class OrderService {
         InventoryRepository i,
         ProductRepository pr
     ) {
+        this(o,c,r,u,s,p,sc,i,pr,null,null);
+    }
+
+    public OrderService(
+        OrderRepository o, CartRepository c, RetailerRepository r, UserRepository u, OrderScopeService s,
+        PriceResolutionService p, SchemeResolutionService sc, InventoryRepository i, ProductRepository pr,
+        NotificationService notifications
+    ) {
+        this(o,c,r,u,s,p,sc,i,pr,notifications,null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public OrderService(
+        OrderRepository o, CartRepository c, RetailerRepository r, UserRepository u, OrderScopeService s,
+        PriceResolutionService p, SchemeResolutionService sc, InventoryRepository i, ProductRepository pr,
+        NotificationService notifications, InventoryMovementService inventoryMovements
+    ) {
         orders = o;
         carts = c;
         retailers = r;
@@ -58,6 +79,8 @@ public class OrderService {
         schemes = sc;
         inventory = i;
         products = pr;
+        this.notifications = notifications;
+        this.inventoryMovements = inventoryMovements;
     }
 
     private record LineItemSpec(Product product, int paidCases) {}
@@ -100,7 +123,9 @@ public class OrderService {
                 lines.add(new LineItemSpec(product, reqItem.paidCases()));
             }
         } else {
-            Cart cart = carts.findActive(uid, retailer.getId())
+            // Serialize checkout attempts for the same active cart. The inventory
+            // reservation below still guards stock across different carts.
+            Cart cart = carts.findActiveForUpdate(uid, retailer.getId())
                 .orElseThrow(() -> new ResourceConflictException("Cart is empty."));
             if (cart.getItems().isEmpty()) {
                 throw new ResourceConflictException("Cart is empty.");
@@ -111,6 +136,21 @@ public class OrderService {
             cartToCheckout = cart;
         }
 
+        // Cart rows may outlive a retailer-distributor relationship. Re-resolve
+        // every product against the current distributor before pricing or stock
+        // lookup, including items loaded from an old cart.
+        List<LineItemSpec> validatedLines = new ArrayList<>();
+        for (LineItemSpec line : lines) {
+            if (line.paidCases() <= 0) {
+                throw new ResourceConflictException("Order quantities must be positive whole cases.");
+            }
+            Product currentProduct = products.findByIdAndDistributorIdAndActiveTrue(
+                line.product().getId(), distributor.getId())
+                .filter(product -> product.getCategory().isActive())
+                .orElseThrow(() -> new ResourceNotFoundException("Active product not found: " + line.product().getId()));
+            validatedLines.add(new LineItemSpec(currentProduct, line.paidCases()));
+        }
+        lines = validatedLines;
         List<UUID> ids = lines.stream().map(l -> l.product().getId()).toList();
         Map<UUID, ResolvedPrice> resolved = prices.resolve(a, retailer.getId(), ids);
 
@@ -214,6 +254,8 @@ public class OrderService {
 
         try {
             Order saved = orders.save(order);
+            if (inventoryMovements != null) inventoryMovements.orderReservation(saved, saved.getCreatedBy());
+            if (notifications != null) notifications.orderSubmitted(saved);
             if (cartToCheckout != null) {
                 cartToCheckout.getItems().clear();
                 cartToCheckout.setStatus(CartStatus.CHECKED_OUT);
@@ -229,14 +271,14 @@ public class OrderService {
     @Transactional(readOnly = true)
     public OrderResponse get(Authentication a, UUID id) {
         Order o = orders.findDetailed(id).orElseThrow(() -> new ResourceNotFoundException("Order not found."));
-        scope.require(scope.userId(a), o.getRetailer().getId(), a);
+        scope.requireHistoricalOrderAccess(scope.userId(a), o.getRetailer().getId(), a);
         return OrderResponse.from(o);
     }
 
     @Transactional(readOnly = true)
     public Page<OrderResponse> list(Authentication a, UUID retailerId, Pageable pageable) {
         UUID uid = scope.userId(a);
-        scope.require(uid, retailerId, a);
+        scope.requireHistoricalOrderAccess(uid, retailerId, a);
         return orders.findByRetailerId(retailerId, pageable).map(OrderResponse::from);
     }
 }

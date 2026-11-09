@@ -48,6 +48,11 @@ class SchemeResolutionServiceTest {
         when(relationships.findFirstByRetailerIdAndStatusOrderByStartedAtDesc(any(),eq(RelationshipStatus.ACTIVE)))
             .thenAnswer(inv -> Optional.of(relation((UUID)inv.getArgument(0),business)));
         when(products.countByIdInAndDistributorId(anyCollection(),eq(distributorId))).thenReturn(1L);
+        when(products.findByIdAndDistributorIdAndActiveTrue(productId, distributorId)).thenAnswer(inv -> {
+            var product = new com.vyapaaros.catalog.entity.Product(); product.setId(productId);
+            var category = new com.vyapaaros.catalog.entity.ProductCategory(); category.setId(UUID.randomUUID()); product.setCategory(category);
+            return Optional.of(product);
+        });
         when(retailerAuthorization.requireMembership(userId,retailerId)).thenReturn(new com.vyapaaros.retailer.entity.RetailerMembership());
         when(memberships.existsByDistributorIdAndUserIdAndStatus(eq(distributorId),eq(userId),eq(DistributorMembershipStatus.ACTIVE))).thenReturn(true);
         service = new SchemeResolutionService(repository, products, authorization,
@@ -57,7 +62,7 @@ class SchemeResolutionServiceTest {
     @Test
     void buyGetFreeUsesOnlyCompletePaidBlocks() {
         ProductScheme scheme = buy(10, 1);
-        when(repository.findApplicable(List.of(productId), retailerId, Instant.parse("2026-01-01T00:00:00Z")))
+        when(repository.findApplicable(List.of(productId), retailerId, distributorId, Instant.parse("2026-01-01T00:00:00Z")))
             .thenReturn(List.of(scheme));
         for (int quantity : new int[] {9, 10, 19, 20}) {
             var result = service.evaluate(productId, retailerId, quantity, price("8.10"), admin());
@@ -69,7 +74,7 @@ class SchemeResolutionServiceTest {
     @Test
     void slabDiscountUsesHalfUpAndFullPaidQuantity() {
         ProductScheme scheme = slab(5, "3.00");
-        when(repository.findApplicable(any(), eq(retailerId), any())).thenReturn(List.of(scheme));
+        when(repository.findApplicable(any(), eq(retailerId), eq(distributorId), any())).thenReturn(List.of(scheme));
         var result = service.evaluate(productId, retailerId, 7, price("10.01"), admin());
         assertEquals(new BigDecimal("2.10"), result.discountAmount());
         assertEquals(new BigDecimal("67.97"), result.finalAmount());
@@ -80,7 +85,7 @@ class SchemeResolutionServiceTest {
 
     @Test
     void unavailablePriceDoesNotProducePayableAmount() {
-        when(repository.findApplicable(any(), eq(retailerId), any())).thenReturn(List.of(buy(10, 1)));
+        when(repository.findApplicable(any(), eq(retailerId), eq(distributorId), any())).thenReturn(List.of(buy(10, 1)));
         var result = service.evaluate(productId, retailerId, 10, ResolvedPrice.unavailable(), admin());
         assertFalse(result.priceAvailable());
         assertNull(result.finalAmount());
@@ -93,9 +98,25 @@ class SchemeResolutionServiceTest {
         var retailer = new com.vyapaaros.retailer.entity.Retailer();
         fallback.setId(UUID.randomUUID()); override.setId(UUID.randomUUID());
         override.setRetailer(retailer);
-        when(repository.findApplicable(any(), eq(retailerId), any())).thenReturn(List.of(fallback, override));
+        when(repository.findApplicable(any(), eq(retailerId), eq(distributorId), any())).thenReturn(List.of(fallback, override));
         var result = service.evaluate(productId, retailerId, 5, price("100.00"), authRetailer());
         assertEquals(new BigDecimal("5.00"), result.discountPercentage());
+    }
+
+    @Test
+    void inactiveAndExpiredSchemesAreExcludedByCurrentQuery() {
+        when(repository.findApplicable(List.of(productId), retailerId, distributorId, Instant.parse("2026-01-01T00:00:00Z")))
+            .thenReturn(List.of());
+        var result = service.summaries(authRetailer(), retailerId, distributorId, List.of(productId)).get(productId);
+        assertFalse(result.schemeAvailable());
+    }
+
+    @Test
+    void schemeResolutionRequiresCurrentRetailerRelationship() {
+        when(relationships.findFirstByRetailerIdAndStatusOrderByStartedAtDesc(retailerId, RelationshipStatus.ACTIVE))
+            .thenReturn(Optional.empty());
+        assertThrows(AccessDeniedException.class, () -> service.summaries(authRetailer(), retailerId, List.of(productId)));
+        verifyNoInteractions(repository);
     }
 
     private ProductScheme buy(int buy, int free) {

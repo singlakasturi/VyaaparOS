@@ -1,7 +1,7 @@
 import { apiRequest } from './api.js'
 
 export function getAcceptedAiOrderItems(items = []) {
-  return items.filter((item) => !item.removed && item.selectedProductId && Number(item.paidCases) > 0 && item.resolutionStatus === 'MATCHED' && item.confirmed === true)
+  return items.filter((item) => !item.removed && item.selectedProductId && Number(item.paidCases) > 0 && item.resolutionStatus === 'MATCHED' && item.confirmed === true && item.unit === 'CASE' && !item.unitAmbiguous)
 }
 
 /**
@@ -25,7 +25,7 @@ export function parseOrderText(retailerId, text) {
  * Adds accepted parsed items to the retailer's cart.
  *
  * @param {string} retailerId - UUID of the retailer
- * @param {Array<{productId: string, paidCases: number}>} items - Accepted items
+ * @param {Array<{productId: string, paidCases: number, unit?: string}>} items - Accepted items
  * @returns {Promise<Object>} CartResponse
  */
 export function applyOrderItems(retailerId, items) {

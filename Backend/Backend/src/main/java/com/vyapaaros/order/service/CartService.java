@@ -40,6 +40,33 @@ public class CartService {
   CartItem item=items.findByCartIdAndProductId(c.getId(),p.getId()).orElseGet(()->{CartItem x=new CartItem();x.setProduct(p);x.setCreatedAt(Instant.now());x.setPosition(c.getItems().stream().mapToInt(CartItem::getPosition).max().orElse(-1)+1);c.addItem(x);return x;});
   item.setPaidCases(r.paidCases());item.setUpdatedAt(Instant.now());c.setUpdatedAt(Instant.now());carts.save(c);return response(c,a,r.retailerId());
  }
+ @Transactional public ReorderCartResult addReorderItems(Authentication a,UUID retailerId,List<ReorderItem> requestedItems){
+  UUID uid=scope.userId(a);scope.require(uid,retailerId,a);activeRetailer(retailerId);UUID distributorId=scope.currentDistributorForRetailer(retailerId).getId();
+  LinkedHashMap<UUID,Integer> quantities=new LinkedHashMap<>();requestedItems.forEach(item->quantities.merge(item.productId(),item.paidCases(),Integer::sum));
+  Cart cart=carts.findActiveForUpdate(uid,retailerId).orElse(null);
+  if(cart!=null&&cart.getItems().stream().anyMatch(item->!distributorId.equals(item.getProduct().getDistributor().getId())))throw new ResourceConflictException("Your current cart contains products from a different distributor. Clear those items before reordering.");
+  List<ReorderSkippedItem> skipped=new ArrayList<>();List<String> added=new ArrayList<>();
+  for(var entry:quantities.entrySet()){
+   UUID productId=entry.getKey();int reorderCases=entry.getValue();Product product;
+   try{product=active(productId,distributorId);}catch(ResourceNotFoundException ex){skipped.add(new ReorderSkippedItem(productId,"Product is no longer active in the current distributor catalogue."));continue;}
+   ResolvedPrice price=prices.resolve(a,retailerId,List.of(productId)).getOrDefault(productId,ResolvedPrice.unavailable());
+   if(!price.priceAvailable()){skipped.add(new ReorderSkippedItem(productId,"No current price is available."));continue;}
+   CartItem existing=cart==null?null:items.findByCartIdAndProductId(cart.getId(),productId).orElse(null);
+   int existingCases=existing==null?0:existing.getPaidCases();
+   if(reorderCases>Integer.MAX_VALUE-existingCases){skipped.add(new ReorderSkippedItem(productId,"Combined cart quantity is too large."));continue;}
+   int targetCases=reorderCases+existingCases;
+   int available=inventory.findByProductIdAndDistributorId(productId,distributorId).map(row->row.getAvailableCases()).orElse(0);
+   if(targetCases>available){skipped.add(new ReorderSkippedItem(productId,"Current stock is " + available + " cases; the combined cart quantity requires at least " + targetCases + " cases."));continue;}
+   SchemeEvaluation calculation=schemes.evaluate(productId,retailerId,targetCases,price,a);
+   long requestedStock=(long)targetCases+(calculation.priceAvailable()?calculation.freeCases():0);
+   if(requestedStock>available){skipped.add(new ReorderSkippedItem(productId,"Current stock is " + available + " cases; the current scheme quantity requires " + requestedStock + " cases."));continue;}
+   if(cart==null){cart=create(uid,retailerId);}
+   if(existing==null){existing=new CartItem();existing.setProduct(product);existing.setCreatedAt(Instant.now());existing.setPosition(cart.getItems().stream().mapToInt(CartItem::getPosition).max().orElse(-1)+1);cart.addItem(existing);}
+   existing.setPaidCases(targetCases);existing.setUpdatedAt(Instant.now());cart.setUpdatedAt(Instant.now());carts.save(cart);added.add(product.getName());
+  }
+  CartResponse result=cart==null?null:response(cart,a,retailerId);
+  return new ReorderCartResult(result,List.copyOf(added),List.copyOf(skipped));
+ }
  @Transactional public CartResponse update(Authentication a,UUID itemId,CartQuantityRequest r){
   UUID uid=scope.userId(a);CartItem item=items.findById(itemId).orElseThrow(()->new ResourceNotFoundException("Cart item not found."));
   scope.require(uid,item.getCart().getRetailer().getId(),a);activeRetailer(item.getCart().getRetailer().getId());requireCartOwner(uid,item.getCart(),a);
@@ -60,5 +87,8 @@ public class CartService {
  }
  private void requireCartOwner(UUID userId,Cart cart,Authentication authentication){if(cart.getCreatedBy()==null||!cart.getCreatedBy().getId().equals(userId))throw new org.springframework.security.access.AccessDeniedException("Cart access denied.");}
  private void activeRetailer(UUID id){if(retailers.findById(id).map(r->r.getStatus()==RetailerStatus.ACTIVE).orElse(false)==false)throw new ResourceConflictException("Retailer is not active.");}
- private CartResponse response(Cart c,Authentication a,UUID rid){List<UUID> ids=c.getItems().stream().map(i->i.getProduct().getId()).toList();Map<UUID,ResolvedPrice> ps=prices.resolve(a,rid,ids);Map<UUID,SchemeSummary> ss=schemes.summaries(a,rid,ids);UUID distributorId=scope.currentDistributorForRetailer(rid).getId();Map<UUID,Integer> stock=new HashMap<>();inventory.findByProductIdInAndDistributorId(ids,distributorId).forEach(i->stock.put(i.getProduct().getId(),i.getAvailableCases()));return CartResponse.from(c,c.getItems().stream().map(i->{ResolvedPrice p=ps.getOrDefault(i.getProduct().getId(),ResolvedPrice.unavailable());SchemeEvaluation evaluation=schemes.evaluate(i.getProduct().getId(),rid,i.getPaidCases(),p,a);return CartItemResponse.from(i,stock.getOrDefault(i.getProduct().getId(),0),p,ss.getOrDefault(i.getProduct().getId(),SchemeSummary.unavailable()),evaluation.freeCases(),evaluation.baseAmount(),evaluation.discountAmount(),evaluation.finalAmount());}).toList());}
+ private CartResponse response(Cart c,Authentication a,UUID rid){List<UUID> ids=c.getItems().stream().map(i->i.getProduct().getId()).toList();Map<UUID,ResolvedPrice> ps=prices.resolve(a,rid,ids);Map<UUID,SchemeSummary> ss=schemes.summaries(a,rid,ids);UUID distributorId=scope.currentDistributorForRetailer(rid).getId();Map<UUID,Integer> stock=new HashMap<>();if(!ids.isEmpty())inventory.findByProductIdInAndDistributorId(ids,distributorId).forEach(i->stock.put(i.getProduct().getId(),i.getAvailableCases()));return CartResponse.from(c,c.getItems().stream().map(i->{boolean active=i.getProduct().isActive()&&i.getProduct().getCategory().isActive();ResolvedPrice p=active?ps.getOrDefault(i.getProduct().getId(),ResolvedPrice.unavailable()):ResolvedPrice.unavailable();SchemeSummary scheme=active?ss.getOrDefault(i.getProduct().getId(),SchemeSummary.unavailable()):SchemeSummary.unavailable();SchemeEvaluation evaluation=active?schemes.evaluate(i.getProduct().getId(),rid,i.getPaidCases(),p,a):SchemeEvaluation.unavailable(i.getPaidCases());return CartItemResponse.from(i,stock.getOrDefault(i.getProduct().getId(),0),p,scheme,evaluation.freeCases(),evaluation.baseAmount(),evaluation.discountAmount(),evaluation.finalAmount());}).toList());}
+ public record ReorderItem(UUID productId,int paidCases){}
+ public record ReorderSkippedItem(UUID productId,String reason){}
+ public record ReorderCartResult(CartResponse cart,List<String> addedProducts,List<ReorderSkippedItem> skippedProducts){}
 }

@@ -1,4 +1,4 @@
-import { apiRequest } from './api.js'
+import { apiDownload, apiRequest } from './api.js'
 
 export function placeOrder(retailerId, clientOrderId, notes = '', items = null) {
   const body = { retailerId, clientOrderId, notes }
@@ -25,5 +25,29 @@ export function fetchOrders(retailerId, page = 0, size = 20) {
 export function fetchOrder(orderId) {
   return apiRequest(`/api/orders/${encodeURIComponent(orderId)}`, {
     method: 'GET',
+  })
+}
+
+export function reorderHistoricalOrder(orderId) {
+  return apiRequest(`/api/retailer/me/orders/${encodeURIComponent(orderId)}/reorder`, { method: 'POST' })
+}
+
+export function fetchOrderInvoice(orderId) {
+  return apiDownload(`/api/orders/${encodeURIComponent(orderId)}/invoice`, { method: 'GET' })
+}
+
+export function fetchOrderActionRequests(orderId) {
+  return apiRequest(`/api/orders/${encodeURIComponent(orderId)}/action-requests`, { method: 'GET' })
+}
+
+export function requestOrderCancellation(orderId, reason = '') {
+  return apiRequest(`/api/orders/${encodeURIComponent(orderId)}/action-requests/cancellation`, {
+    method: 'POST', body: { reason },
+  })
+}
+
+export function requestOrderReturn(orderId, reason) {
+  return apiRequest(`/api/orders/${encodeURIComponent(orderId)}/action-requests/return`, {
+    method: 'POST', body: { reason },
   })
 }

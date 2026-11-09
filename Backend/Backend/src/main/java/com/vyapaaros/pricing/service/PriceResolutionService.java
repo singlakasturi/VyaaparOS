@@ -45,11 +45,11 @@ public class PriceResolutionService {
         if (products == null || products.countByIdInAndDistributorId(productIds.stream().distinct().toList(), distributorId)
             != productIds.stream().distinct().count()) throw denied();
 
-        Map<UUID, ProductPrice> defaults = priceRepository.findActiveDefaults(productIds).stream()
-            .collect(Collectors.toMap(price -> price.getProduct().getId(), Function.identity()));
+        Map<UUID, ProductPrice> defaults = priceRepository.findActiveDefaults(productIds, distributorId).stream()
+            .collect(Collectors.toMap(price -> price.getProduct().getId(), Function.identity(), (first, ignored) -> first));
         Map<UUID, ProductPrice> overrides = retailerId == null ? Map.of()
-            : priceRepository.findActiveOverrides(productIds, retailerId).stream()
-                .collect(Collectors.toMap(price -> price.getProduct().getId(), Function.identity()));
+            : priceRepository.findActiveOverrides(productIds, retailerId, distributorId).stream()
+                .collect(Collectors.toMap(price -> price.getProduct().getId(), Function.identity(), (first, ignored) -> first));
         Map<UUID, ResolvedPrice> resolved = new HashMap<>();
         for (UUID productId : productIds) {
             ProductPrice override = overrides.get(productId);

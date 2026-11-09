@@ -114,10 +114,10 @@ class DistributorDataScopingTest {
             .thenReturn(List.of(inventoryFor(productA, 11)));
         when(inventory.findByProductIdInAndDistributorId(List.of(productBId), distroBId))
             .thenReturn(List.of(inventoryFor(productB, 22)));
-        when(prices.findActiveDefaults(List.of(productAId))).thenReturn(List.of(price(productA)));
-        when(prices.findActiveDefaults(List.of(productBId))).thenReturn(List.of(price(productB)));
-        when(prices.findActiveOverrides(anyList(), any(UUID.class))).thenReturn(List.of());
-        when(schemes.findApplicable(anyCollection(), any(), any(Instant.class))).thenReturn(List.of());
+        when(prices.findActiveDefaults(List.of(productAId), distroAId)).thenReturn(List.of(price(productA)));
+        when(prices.findActiveDefaults(List.of(productBId), distroBId)).thenReturn(List.of(price(productB)));
+        when(prices.findActiveOverrides(anyList(), any(UUID.class), any(UUID.class))).thenReturn(List.of());
+        when(schemes.findApplicable(anyCollection(), any(), any(UUID.class), any(Instant.class))).thenReturn(List.of());
 
         PriceResolutionService priceResolution = new PriceResolutionService(prices, products, authorization);
         SchemeResolutionService schemeResolution = new SchemeResolutionService(schemes, products, authorization, Clock.systemUTC());
@@ -130,11 +130,13 @@ class DistributorDataScopingTest {
         var page = catalog.listProducts(auth(staffAId, "ROLE_ORDER_DESK"), null, null, PageRequest.of(0, 20), null, distroAId);
         assertEquals(List.of(productAId), page.getContent().stream().map(row -> row.id()).toList());
         assertEquals(11, page.getContent().get(0).availableCases());
-        when(orders.searchByDistributorIds(Set.of(distroAId), null, null, null, null, PageRequest.of(0, 10)))
+        when(orders.searchByDistributorIds(Set.of(distroAId), null, null, OrderRepository.EARLIEST_ORDER_DATE,
+            OrderRepository.LATEST_ORDER_DATE, null, PageRequest.of(0, 10)))
             .thenReturn(new PageImpl<>(List.of(orderA)));
-        var result = orderDesk.list(auth(staffAId, "ROLE_ORDER_DESK"), null, null, null, null, PageRequest.of(0, 10));
+        var result = orderDesk.list(auth(staffAId, "ROLE_ORDER_DESK"), null, null, null, null, null, PageRequest.of(0, 10));
         assertEquals(1, result.getTotalElements());
-        verify(orders).searchByDistributorIds(Set.of(distroAId), null, null, null, null, PageRequest.of(0, 10));
+        verify(orders).searchByDistributorIds(Set.of(distroAId), null, null, OrderRepository.EARLIEST_ORDER_DATE,
+            OrderRepository.LATEST_ORDER_DATE, null, PageRequest.of(0, 10));
     }
 
     @Test
@@ -154,7 +156,7 @@ class DistributorDataScopingTest {
         assertThrows(AccessDeniedException.class, () -> catalog.listProducts(
             auth(globalDeskOnlyId, "ROLE_ORDER_DESK"), null, null, PageRequest.of(0, 20), null, distroAId));
         assertThrows(AccessDeniedException.class, () -> orderDesk.list(
-            auth(globalDeskOnlyId, "ROLE_ORDER_DESK"), null, null, null, null, PageRequest.of(0, 10)));
+            auth(globalDeskOnlyId, "ROLE_ORDER_DESK"), null, null, null, null, null, PageRequest.of(0, 10)));
         verifyNoInteractions(orders);
     }
 

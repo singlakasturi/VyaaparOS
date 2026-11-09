@@ -35,6 +35,15 @@ public class Inventory {
     @Column(name = "available_cases", nullable = false)
     private int availableCases;
 
+    @Column(name = "on_hand_cases", nullable = false)
+    private int onHandCases;
+
+    @Column(name = "reserved_cases", nullable = false)
+    private int reservedCases;
+
+    @Column(name = "low_stock_threshold", nullable = false)
+    private int lowStockThreshold;
+
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
@@ -45,10 +54,16 @@ public class Inventory {
     public DistributorBusiness getDistributor() { return distributor; }
     public Product getProduct() { return product; }
     public int getAvailableCases() { return availableCases; }
+    public int getOnHandCases() { return onHandCases; }
+    public int getReservedCases() { return reservedCases; }
+    public int getLowStockThreshold() { return lowStockThreshold; }
     public Instant getUpdatedAt() { return updatedAt; }
     public void setId(UUID id) { this.id = id; }
     public void setDistributor(DistributorBusiness distributor) { this.distributor = distributor; }
     public void setProduct(Product product) { this.product = product; }
     public void setAvailableCases(int availableCases) { this.availableCases = availableCases; }
+    public void setOnHandCases(int onHandCases) { this.onHandCases = onHandCases; }
+    public void setReservedCases(int reservedCases) { this.reservedCases = reservedCases; }
+    public void setLowStockThreshold(int lowStockThreshold) { this.lowStockThreshold = lowStockThreshold; }
     public void setUpdatedAt(Instant updatedAt) { this.updatedAt = updatedAt; }
 }

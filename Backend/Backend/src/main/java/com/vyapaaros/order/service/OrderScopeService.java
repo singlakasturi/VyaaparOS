@@ -20,7 +20,15 @@ public class OrderScopeService {
   if(has(auth,"ROLE_RETAILER")) {
    authorization.requireMembership(userId,retailerId);
    if(distributorAuthorization != null) distributorAuthorization.requireCurrentDistributorForRetailer(retailerId);
+  } else if(has(auth,"ROLE_ORDER_DESK") && distributorAuthorization != null) {
+   DistributorBusiness distributor = distributorAuthorization.requireCurrentDistributorForRetailer(retailerId);
+   distributorAuthorization.requireOrderDeskAccess(userId, distributor.getId());
   } else throw new AccessDeniedException("Retailer order access denied.");
+ }
+ public void requireHistoricalOrderAccess(UUID userId,UUID retailerId,Authentication auth){
+  if(!retailers.existsById(retailerId)) throw new com.vyapaaros.common.exception.ResourceNotFoundException("Retailer not found.");
+  if(!has(auth,"ROLE_RETAILER")) throw new AccessDeniedException("Retailer order access denied.");
+  authorization.requireMembership(userId,retailerId);
  }
  public DistributorBusiness currentDistributorForRetailer(UUID retailerId){
   if(distributorAuthorization == null) throw new AccessDeniedException("Distributor relationship is required.");

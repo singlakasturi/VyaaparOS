@@ -18,13 +18,19 @@ import {
 import { useAuth } from '../../services/AuthProvider'
 import { parseOrderText, applyOrderItems, fetchCart, getAcceptedAiOrderItems } from '../../services/aiOrder'
 import { ApiError } from '../../services/api'
+import { fetchProducts } from '../../services/catalog.js'
 
 const EXAMPLE_PROMPTS = [
+  'bhaiya 5 peti biscuit chhota, 2 peti washing powder 1 kilo, chai patti 250 wala 1 peti',
   'Bhaiya 5 peti biscuit chhota',
   '2 peti washing powder 1 kilo',
   'Chai patti 250 wala 1 peti',
   '5 cases glucose biscuit aur 3 cases detergent',
 ]
+
+const money = (amount, currency = 'INR') => amount == null
+  ? 'Price unavailable'
+  : new Intl.NumberFormat('en-IN', { style: 'currency', currency }).format(Number(amount))
 
 const STATUS_LABELS = {
   MATCHED: 'Matched',
@@ -87,17 +93,22 @@ export default function AiOrderAssistant() {
   const [isParsing, setIsParsing] = useState(false)
   const [parseResult, setParseResult] = useState(null)
   const [editableItems, setEditableItems] = useState([])
+  const [catalogueProducts, setCatalogueProducts] = useState([])
+  const [manualSelections, setManualSelections] = useState({})
   const [parseError, setParseError] = useState(null)
 
   const [isApplying, setIsApplying] = useState(false)
   const [applySuccess, setApplySuccess] = useState(false)
   const [applyError, setApplyError] = useState(null)
   const [cartResult, setCartResult] = useState(null)
+  const [reviewOnly, setReviewOnly] = useState(false)
 
   const applyGuardRef = useRef(false)
   const textareaRef = useRef(null)
 
-  const retailerId = retailerContext?.retailerId || getRetailerId(session)
+  const isOrderDesk = session?.user?.roles?.some((r) => r === 'ORDER_DESK' || r === 'ROLE_ORDER_DESK')
+  const retailerId = isOrderDesk ? null : (retailerContext?.retailerId || getRetailerId(session))
+  const effectiveRetailerId = isOrderDesk ? retailerContext?.retailerId : retailerId
 
   // Build editable items from parse response
   const buildEditableItems = useCallback((items) => {
@@ -109,8 +120,14 @@ export default function AiOrderAssistant() {
       candidates: item.candidates || [],
       paidCases: item.paidCases ?? '',
       unit: item.unit || 'CASE',
+      unitAmbiguous: Boolean(item.unitAmbiguous || (item.unit !== 'CASE' && item.unit !== 'PIECE')),
       confidence: item.confidence,
       explanation: item.explanation,
+      pricePerCase: item.product?.pricePerCase,
+      priceAvailable: item.product?.priceAvailable,
+      availableCases: item.product?.availableCases,
+      schemeName: item.product?.schemeName,
+      currency: item.product?.currency || 'INR',
       // User interaction state
       selectedProductId: item.product?.id || null,
       confirmed: false,
@@ -126,8 +143,12 @@ export default function AiOrderAssistant() {
       setParseError('Please type your order in the box above.')
       return
     }
-    if (!retailerId) {
-      setParseError('No active retailer found. Please ensure you are logged in as a retailer.')
+    if (!effectiveRetailerId) {
+      setParseError(isOrderDesk ? 'Choose an active retailer in the order desk first.' : 'No active retailer found. Please sign in as a retailer.')
+      return
+    }
+    if (isOrderDesk && !retailerContext?.retailers?.some((retailer) => retailer.id === effectiveRetailerId)) {
+      setParseError('Choose an active retailer in this order desk before parsing.')
       return
     }
     if (text.length > 4000) {
@@ -139,13 +160,21 @@ export default function AiOrderAssistant() {
     setParseResult(null)
     setEditableItems([])
     setApplySuccess(false)
+    setReviewOnly(false)
     setApplyError(null)
     setCartResult(null)
     setIsParsing(true)
 
     try {
-      const result = await parseOrderText(retailerId, text)
+      const result = await parseOrderText(effectiveRetailerId, text)
       setParseResult(result)
+      try {
+        const page = await fetchProducts({ retailerId: effectiveRetailerId, page: 0, size: 100 })
+        setCatalogueProducts(page?.content || [])
+      } catch {
+        setCatalogueProducts([])
+      }
+      setManualSelections({})
       if (result.items && result.items.length > 0) {
         setEditableItems(buildEditableItems(result.items))
       } else {
@@ -159,10 +188,7 @@ export default function AiOrderAssistant() {
           setParseError('You are not authorized to place orders for this retailer.')
         } else if (err.status === 503) {
           const providerMessage = err.message || 'The AI provider is unavailable.'
-          const followUp = /permission|authentication/i.test(providerMessage)
-            ? 'Check the server-side Gemini key permissions.'
-            : 'Retry shortly. If this continues, check provider quota and availability.'
-          setParseError(`${providerMessage} ${followUp} Your order text was not added to the cart.`)
+          setParseError(`${providerMessage} Your order text was not added to the cart.`)
         } else if (err.status === 429) {
           setParseError('Too many requests. Please wait a moment and try again.')
         } else if (err.status === 422 || err.status === 400) {
@@ -176,7 +202,26 @@ export default function AiOrderAssistant() {
     } finally {
       setIsParsing(false)
     }
-  }, [orderText, retailerId, buildEditableItems])
+  }, [orderText, effectiveRetailerId, buildEditableItems, isOrderDesk, retailerContext?.retailers])
+
+  const handleManualProduct = useCallback((key, productId) => {
+    const product = catalogueProducts.find((entry) => entry.id === productId)
+    if (!product) return
+    setEditableItems((current) => current.map((item) => item._key !== key ? item : ({
+      ...item,
+      resolutionStatus: 'MATCHED',
+      unitAmbiguous: false,
+      product: { id: product.id, sku: product.sku, name: product.name },
+      selectedProductId: product.id,
+      pricePerCase: product.pricePerCase,
+      priceAvailable: product.priceAvailable,
+      availableCases: product.availableCases,
+      schemeName: product.schemeName,
+      currency: product.currency || 'INR',
+      confirmed: false,
+      explanation: 'Selected manually from the current catalogue.',
+    })))
+  }, [catalogueProducts])
 
   // Update item quantity
   const handleQuantityChange = useCallback((key, value) => {
@@ -219,10 +264,16 @@ export default function AiOrderAssistant() {
         return {
           ...item,
           resolutionStatus: 'MATCHED',
+          unitAmbiguous: false,
           product: { id: candidate.id, sku: candidate.sku, name: candidate.name },
           selectedProductId: candidate.id,
+          pricePerCase: candidate.pricePerCase,
+          priceAvailable: candidate.priceAvailable,
+          availableCases: candidate.availableCases,
+          schemeName: candidate.schemeName,
+          currency: candidate.currency || 'INR',
           candidates: item.candidates,
-          confirmed: item.paidCases > 0,
+          confirmed: item.paidCases > 0 && !item.unitAmbiguous,
           explanation: 'Product selected from suggestions.',
         }
       })
@@ -239,7 +290,11 @@ export default function AiOrderAssistant() {
   }, [])
 
   const handleConfirmItem = useCallback((key, confirmed) => {
-    setEditableItems((prev) => prev.map((item) => item._key === key ? { ...item, confirmed } : item))
+    setEditableItems((prev) => prev.map((item) => item._key === key ? {
+      ...item,
+      confirmed,
+      ...(confirmed && item.unitAmbiguous ? { unit: 'CASE', unitAmbiguous: false } : {}),
+    } : item))
   }, [])
 
   // Get accepted items
@@ -255,8 +310,23 @@ export default function AiOrderAssistant() {
       setApplyError('No items are ready to add. Please resolve any issues above first.')
       return
     }
-    if (!retailerId) {
+    if (!effectiveRetailerId) {
       setApplyError('No active retailer context. Please sign in again.')
+      return
+    }
+    if (isOrderDesk) {
+      setReviewOnly(true)
+      setCartResult({ items: accepted.map((item) => ({
+        id: item._key,
+        name: item.product?.name,
+        sku: item.product?.sku,
+        paidCases: item.paidCases,
+        pricePerCase: item.pricePerCase,
+        priceAvailable: item.priceAvailable,
+        availableCases: item.availableCases,
+        scheme: { schemeAvailable: Boolean(item.schemeName), schemeName: item.schemeName },
+      })) })
+      setApplySuccess(true)
       return
     }
 
@@ -268,13 +338,14 @@ export default function AiOrderAssistant() {
       const items = accepted.map((item) => ({
         productId: item.selectedProductId,
         paidCases: item.paidCases,
+        unit: item.unit,
       }))
-      const cartResponse = await applyOrderItems(retailerId, items)
+      const cartResponse = await applyOrderItems(effectiveRetailerId, items)
       setApplySuccess(true)
 
       // Refresh cart for accurate pricing/schemes
       try {
-        const freshCart = await fetchCart(retailerId)
+        const freshCart = await fetchCart(effectiveRetailerId)
         setCartResult(freshCart)
       } catch {
         // Use the apply response if refresh fails
@@ -300,7 +371,7 @@ export default function AiOrderAssistant() {
       setIsApplying(false)
       applyGuardRef.current = false
     }
-  }, [getAcceptedItems, retailerId])
+  }, [getAcceptedItems, effectiveRetailerId, isOrderDesk])
 
   // Reset everything
   const handleReset = useCallback(() => {
@@ -331,6 +402,7 @@ export default function AiOrderAssistant() {
   const hasUnresolved = activeItems.some(
     (item) =>
       item.resolutionStatus !== 'MATCHED' ||
+      item.unitAmbiguous ||
       item.missingQuantity ||
       !item.confirmed
   )
@@ -338,18 +410,22 @@ export default function AiOrderAssistant() {
   const isSalesperson = session?.user?.roles?.some(
     (r) => r === 'SALESPERSON' || r === 'ROLE_SALESPERSON'
   )
-  const selectedRetailerName = retailerContext?.retailer?.businessName || getSelectedRetailerName()
+  const selectedRetailerName = isOrderDesk
+    ? retailerContext?.retailers?.find((retailer) => retailer.id === effectiveRetailerId)?.businessName
+    : retailerContext?.retailer?.businessName || getSelectedRetailerName()
 
   // ── Render ──
 
-  if (!retailerId) {
+  if (!effectiveRetailerId) {
     return (
       <div className="ai-page">
         <div className="ai-no-retailer card">
           <AlertCircle size={32} className="ai-no-retailer-icon" />
-          <h2>Retailer Context Required</h2>
+          <h2>{isOrderDesk ? 'Select a retailer' : 'Retailer Context Required'}</h2>
           <p>
-            {isSalesperson
+            {isOrderDesk
+              ? 'Choose an active retailer from the workspace selector to parse their current catalogue.'
+              : isSalesperson
               ? 'Please select an assigned retailer before using the AI Order Assistant.'
               : 'Please sign in as a retailer to use the AI Order Assistant.'}
           </p>
@@ -379,13 +455,27 @@ export default function AiOrderAssistant() {
           <p className="ai-subtitle">
             {selectedRetailerName ? (
               <>
-                Ordering on behalf of <strong>{selectedRetailerName}</strong>. Just tell us what you need.
+                {isOrderDesk ? 'Preparing a cart for ' : 'Ordering for '}<strong>{selectedRetailerName}</strong>.
               </>
             ) : (
-              "Just tell us what you need. We'll prepare your order."
+              "Paste a WhatsApp order message. Review each item before adding it to your cart."
             )}
           </p>
+          {isOrderDesk && (
+            <label className="ai-retailer-select">Active retailer
+              <select value="" onChange={(event) => retailerContext?.setRetailerId?.(event.target.value)}>
+                <option value="">Choose an active retailer</option>
+                {(retailerContext?.retailers || []).map((retailer) => <option key={retailer.id} value={retailer.id}>{retailer.businessName}</option>)}
+              </select>
+            </label>
+          )}
         </div>
+        {isOrderDesk && <label className="ai-retailer-select ai-retailer-select-header">Retailer
+          <select value={effectiveRetailerId || ''} onChange={(event) => retailerContext?.setRetailerId?.(event.target.value)}>
+            <option value="">Choose retailer</option>
+            {(retailerContext?.retailers || []).map((retailer) => <option key={retailer.id} value={retailer.id}>{retailer.businessName}</option>)}
+          </select>
+        </label>}
       </div>
 
       {/* Success State */}
@@ -394,16 +484,17 @@ export default function AiOrderAssistant() {
           <div className="ai-success-icon-wrap">
             <Check size={28} />
           </div>
-          <h2>Items added to cart!</h2>
+          <h2>{reviewOnly ? 'Review ready' : 'Items added to cart!'}</h2>
           <p>
-            {acceptedItems.length} item{acceptedItems.length !== 1 ? 's' : ''} added
-            successfully. Prices and schemes will be recalculated at order submission.
+            {reviewOnly
+              ? `${acceptedItems.length} reviewed item${acceptedItems.length !== 1 ? 's' : ''} shown for the selected retailer. No cart was changed and no order was placed.`
+              : `${acceptedItems.length} item${acceptedItems.length !== 1 ? 's' : ''} added to cart. Review it and continue through checkout when ready; no order has been placed.`}
           </p>
 
           {/* Cart Summary */}
           {cartResult.items && cartResult.items.length > 0 && (
             <div className="ai-cart-summary">
-              <h3>Your Cart</h3>
+              <h3>{reviewOnly ? 'Reviewed Items' : 'Your Cart'}</h3>
               <div className="ai-cart-items">
                 {cartResult.items.map((ci) => (
                   <div className="ai-cart-item" key={ci.id}>
@@ -412,7 +503,7 @@ export default function AiOrderAssistant() {
                       <span className="ai-cart-item-sku">{ci.sku}</span>
                     </div>
                     <div className="ai-cart-item-detail">
-                      <span>{ci.paidCases} case{ci.paidCases !== 1 ? 's' : ''}</span>
+                      <span>{ci.paidCases} case{ci.paidCases !== 1 ? 's' : ''} · line total {ci.pricePerCase != null ? `₹${(Number(ci.pricePerCase) * Number(ci.paidCases)).toFixed(2)}` : 'unavailable'}</span>
                       {ci.pricePerCase != null && (
                         <span className="ai-cart-item-price">
                           ₹{Number(ci.pricePerCase).toFixed(2)}/case
@@ -441,6 +532,8 @@ export default function AiOrderAssistant() {
           )}
 
           <div className="ai-success-actions">
+            {reviewOnly && <button className="btn btn-secondary" type="button" onClick={handleReset}><RotateCcw size={18}/>Back to parsed lines</button>}
+            {!reviewOnly && <>
             <button
               className="btn btn-primary"
               onClick={() => navigate(isSalesperson ? '/salesperson/cart' : '/retailer/cart')}
@@ -457,6 +550,7 @@ export default function AiOrderAssistant() {
               <RotateCcw size={18} />
               New Order
             </button>
+            </>}
           </div>
         </div>
       )}
@@ -594,6 +688,9 @@ export default function AiOrderAssistant() {
                     onSelectCandidate={handleSelectCandidate}
                     onRemove={handleRemoveItem}
                     onConfirm={handleConfirmItem}
+                    catalogueProducts={catalogueProducts}
+                    manualSelections={manualSelections}
+                    onSelectManual={handleManualProduct}
                   />
                 )
               })}
@@ -651,7 +748,7 @@ export default function AiOrderAssistant() {
                     ) : (
                       <>
                         <ShoppingCart size={18} />
-                        Add accepted items to cart
+                        {isOrderDesk ? 'Review selected items' : 'Add reviewed items to cart'}
                       </>
                     )}
                   </button>
@@ -674,6 +771,9 @@ function ParsedItemCard({
   onSelectCandidate,
   onRemove,
   onConfirm,
+  catalogueProducts = [],
+  manualSelections = {},
+  onSelectManual = () => {},
 }) {
   const [candidatesOpen, setCandidatesOpen] = useState(
     item.resolutionStatus === 'AMBIGUOUS'
@@ -721,6 +821,13 @@ function ParsedItemCard({
           <div className="ai-item-product-info">
             <span className="ai-item-product-name">{item.product.name}</span>
             <span className="ai-item-product-sku">SKU: {item.product.sku}</span>
+            <span className="ai-item-review-details">
+              {item.priceAvailable && item.pricePerCase != null
+                ? `${money(item.pricePerCase, item.currency)} / case · ${item.paidCases || 0} cases = ${money(Number(item.pricePerCase) * Number(item.paidCases || 0), item.currency)}`
+                : 'Current price unavailable'}
+              {Number.isInteger(item.availableCases) ? ` · ${item.availableCases} cases in stock` : ''}
+              {item.schemeName ? ` · ${item.schemeName}` : ''}
+            </span>
           </div>
           <div className="ai-quantity-control">
             <button
@@ -748,13 +855,16 @@ function ParsedItemCard({
             >
               <Plus size={14} />
             </button>
-            <span className="ai-quantity-unit">cases</span>
+            <span className="ai-quantity-unit">{item.unit === 'PIECE' ? 'pieces' : 'cases'}</span>
           </div>
         </div>
       )}
 
       {item.resolutionStatus === 'MATCHED' && item.product && !item.missingQuantity && (
-        <label className="ai-item-confirm"><input type="checkbox" checked={Boolean(item.confirmed)} onChange={(event) => onConfirm(item._key, event.target.checked)} />I reviewed this product and case quantity.</label>
+        <div className="ai-confirm-group">
+          {item.unitAmbiguous && <p className="ai-item-unmatched-hint">The message did not specify cases or pieces. Confirm you mean {item.unit === 'PIECE' ? 'pieces' : 'cases'}; no conversion is applied.</p>}
+          <label className="ai-item-confirm"><input type="checkbox" checked={Boolean(item.confirmed)} onChange={(event) => onConfirm(item._key, event.target.checked)} />I reviewed this product and {item.unitAmbiguous ? `the ${item.unit === 'PIECE' ? 'piece' : 'case'} quantity` : `${item.unit === 'PIECE' ? 'piece' : 'case'} quantity`}.</label>
+        </div>
       )}
 
       {/* Ambiguous — Candidate Selection */}
@@ -823,7 +933,7 @@ function ParsedItemCard({
                   >
                     <Plus size={14} />
                   </button>
-                  <span className="ai-quantity-unit">cases</span>
+                  <span className="ai-quantity-unit">{item.unit === 'PIECE' ? 'pieces' : 'cases'}</span>
                 </div>
               )}
             </div>
@@ -835,6 +945,12 @@ function ParsedItemCard({
       {item.resolutionStatus === 'UNMATCHED' && (
         <div className="ai-item-unmatched">
           <p>{item.explanation || 'This product could not be identified in the catalogue.'}</p>
+          <label className="ai-manual-select">Select product manually
+            <select value={manualSelections[item._key] || ''} onChange={(event) => { onSelectManual(item._key, event.target.value) }}>
+              <option value="">Choose from current catalogue</option>
+              {catalogueProducts.map((product) => <option value={product.id} key={product.id}>{product.name} · {product.sku}</option>)}
+            </select>
+          </label>
           <p className="ai-item-unmatched-hint">
             Try rephrasing or remove this item.
           </p>

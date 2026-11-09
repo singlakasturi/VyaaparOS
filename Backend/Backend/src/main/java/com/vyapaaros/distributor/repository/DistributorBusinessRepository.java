@@ -7,4 +7,5 @@ import java.util.List;
 
 public interface DistributorBusinessRepository extends JpaRepository<DistributorBusiness, UUID> {
     List<DistributorBusiness> findAllByCreatedById(UUID createdById);
+    List<DistributorBusiness> findTop20ByBusinessNameContainingIgnoreCaseOrderByBusinessNameAsc(String query);
 }

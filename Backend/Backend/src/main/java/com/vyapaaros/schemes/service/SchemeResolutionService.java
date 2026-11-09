@@ -48,8 +48,18 @@ public class SchemeResolutionService {
     public Map<UUID, SchemeSummary> summaries(Authentication auth, UUID retailerId, UUID distributorId, List<UUID> productIds) {
         UUID businessId = authorize(auth, retailerId, distributorId, productIds);
         if (productIds.isEmpty()) return Map.of();
-        Map<UUID, List<ProductScheme>> grouped = repository.findApplicable(productIds, retailerId, Instant.now(clock))
-            .stream().collect(Collectors.groupingBy(s -> s.getProduct().getId()));
+        List<ProductScheme> applicable = repository.findApplicable(productIds, retailerId, businessId, Instant.now(clock));
+        Map<UUID, List<ProductScheme>> grouped = new HashMap<>();
+        Map<UUID, UUID> categoryByProduct = products.findAllById(productIds).stream()
+            .collect(Collectors.toMap(Product::getId, p -> p.getCategory().getId()));
+        for (ProductScheme scheme : applicable) {
+            for (UUID productId : productIds) {
+                boolean matches = scheme.getProduct() != null ? scheme.getProduct().getId().equals(productId)
+                    : scheme.getCategory() != null ? scheme.getCategory().getId().equals(categoryByProduct.get(productId))
+                    : true;
+                if (matches) grouped.computeIfAbsent(productId, ignored -> new ArrayList<>()).add(scheme);
+            }
+        }
         Map<UUID, SchemeSummary> result = new HashMap<>();
         for (UUID id : productIds) {
             ProductScheme chosen = chooseSummary(grouped.getOrDefault(id, List.of()), retailerId);
@@ -63,7 +73,12 @@ public class SchemeResolutionService {
         if (paidCases < 0) throw new IllegalArgumentException("Paid cases cannot be negative.");
         authorize(auth, retailerId, null, List.of(productId));
         if (!price.priceAvailable()) return SchemeEvaluation.unavailable(paidCases);
-        List<ProductScheme> schemes = repository.findApplicable(List.of(productId), retailerId, Instant.now(clock));
+        UUID businessId = authorization.requireRetailerAccess((UUID) auth.getPrincipal(), retailerId);
+        Product product = products.findByIdAndDistributorIdAndActiveTrue(productId, businessId)
+            .orElseThrow(() -> new AccessDeniedException("Product is outside the authorized distributor."));
+        List<ProductScheme> schemes = repository.findApplicable(List.of(productId), retailerId, businessId, Instant.now(clock))
+            .stream().filter(s -> s.getProduct() == null || s.getProduct().getId().equals(productId)
+                || s.getCategory() == null || s.getCategory().getId().equals(product.getCategory().getId())).toList();
         BigDecimal base = price.pricePerCase().multiply(BigDecimal.valueOf(paidCases));
         ProductScheme selected = null; Calculation best = null;
         for (ProductScheme candidate : preferredByType(schemes, retailerId)) {

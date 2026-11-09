@@ -33,31 +33,23 @@ export function RoleProtectedRoute({ allowedRoles = [], fallbackPath }) {
 }
 
 export function PublicOnlyRoute() {
-  const { isAuthenticated, session } = useAuth()
+  const { isAuthenticated } = useAuth()
   const location = useLocation()
 
   if (!isAuthenticated) return <Outlet />
 
   const requestedPath = location.state?.from?.pathname || '/retailer'
   const requestedSearch = location.state?.from?.search || ''
-  const role = session?.user?.roles?.[0]
-  const fallback = role === 'ADMIN' ? '/admin' : role === 'ORDER_DESK' ? '/order-desk' : role === 'SALESPERSON' ? '/salesperson' : '/retailer'
+  const fallback = '/workspace'
   const destination = location.state?.from ? `${requestedPath}${requestedSearch}` : fallback
 
   return <Navigate replace to={destination} />
 }
 
 export function RootRedirect() {
-  const { isAuthenticated, session } = useAuth()
+  const { isAuthenticated } = useAuth()
   if (!isAuthenticated) {
     return <Navigate replace to="/auth" />
   }
-  const role = session?.user?.roles?.[0]
-  if (role === 'SALESPERSON') {
-    return <Navigate replace to="/salesperson" />
-  }
-  if (role === 'ADMIN' || role === 'ORDER_DESK') {
-    return <Navigate replace to={role === 'ORDER_DESK' ? '/order-desk' : '/admin'} />
-  }
-  return <Navigate replace to="/retailer" />
+  return <Navigate replace to="/workspace" />
 }

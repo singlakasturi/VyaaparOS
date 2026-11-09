@@ -367,6 +367,15 @@
   font-family: var(--font-mono);
 }
 
+.ai-item-review-details {
+  color: var(--color-secondary-text);
+  font-size: 0.76rem;
+  line-height: 1.45;
+}
+.ai-retailer-select { display: grid; gap: .35rem; color: var(--color-secondary-text); font-size: .78rem; font-weight: 650; }
+.ai-retailer-select select { width: 100%; min-height: 2.75rem; padding: .5rem .65rem; border: 1px solid var(--color-border); border-radius: .5rem; background: var(--color-surface); color: var(--color-primary-text); font: inherit; }
+.ai-retailer-select-header { min-width: min(18rem, 100%); margin-left: auto; }
+
 /* ── Quantity Control ── */
 
 .ai-quantity-control {
@@ -381,8 +390,8 @@
 
 .ai-quantity-btn {
   display: grid;
-  width: 2.25rem;
-  height: 2.25rem;
+  width: 2.75rem;
+  height: 2.75rem;
   place-items: center;
   border: 0;
   color: var(--color-primary);
@@ -714,7 +723,9 @@
 
   .ai-header {
     gap: 0.75rem;
+    flex-wrap: wrap;
   }
+  .ai-retailer-select-header { width: 100%; margin-left: 0; }
 
   .ai-header-icon-wrap {
     width: 2.5rem;
@@ -800,10 +811,6 @@
     width: 2.75rem;
   }
 
-  .ai-quantity-btn {
-    width: 2rem;
-    height: 2rem;
-  }
 }
 
 /* ── Catalogue Promo Banner ── */

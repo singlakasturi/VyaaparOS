@@ -28,7 +28,7 @@ public class Product {
     @JoinColumn(name = "distributor_id", nullable = false)
     private DistributorBusiness distributor;
 
-    @Column(name = "sku", nullable = false, unique = true, length = 60)
+    @Column(name = "sku", nullable = false, length = 60)
     private String sku;
 
     @Column(name = "name", nullable = false, length = 200)

@@ -5,6 +5,7 @@ import static org.mockito.Mockito.*;
 
 import com.vyapaaros.ai.dto.*;
 import com.vyapaaros.ai.provider.AiOrderProvider;
+import com.vyapaaros.distributor.entity.DistributorBusiness;
 import com.vyapaaros.order.dto.CartResponse;
 import com.vyapaaros.order.service.CartService;
 import com.vyapaaros.order.service.OrderScopeService;
@@ -24,13 +25,17 @@ class AiOrderCaptureServiceTest {
     @Test
     void parseOnlyReturnsSuggestionsAndDoesNotTouchCart() {
         UUID retailerId = UUID.randomUUID();
+        UUID distributorId = UUID.randomUUID();
         UUID productId = UUID.randomUUID();
         var auth = auth();
+        var distributor = new DistributorBusiness();
+        distributor.setId(distributorId);
+        when(scope.currentDistributorForRetailer(retailerId)).thenReturn(distributor);
         when(provider.extract("5 peti biscuit")).thenReturn(List.of(
             new AiProviderItem("5 peti biscuit", "biscuit chhota", 5, "CASE", .94)
         ));
         ProductMatchingService.Match match = ProductMatchingService.Match.matched(product(productId));
-        when(matcher.match("biscuit chhota")).thenReturn(match);
+        when(matcher.match("biscuit chhota", distributorId)).thenReturn(match);
 
         var response = service.parse(auth, new AiOrderParseRequest(retailerId, "5 peti biscuit"));
 
@@ -49,6 +54,6 @@ class AiOrderCaptureServiceTest {
 
     private UsernamePasswordAuthenticationToken auth() {
         return new UsernamePasswordAuthenticationToken(UUID.randomUUID(), null,
-            List.of(new SimpleGrantedAuthority("ROLE_ADMIN")));
+            List.of(new SimpleGrantedAuthority("ROLE_RETAILER")));
     }
 }

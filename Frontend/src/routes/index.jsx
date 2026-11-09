@@ -6,6 +6,9 @@ import { retailerRoutes } from './retailerRoutes'
 import { salespersonRoutes } from './salespersonRoutes'
 import { ProtectedRoute, PublicOnlyRoute, RoleProtectedRoute, RootRedirect } from './RouteGuards'
 import { orderDeskRoutes } from './orderDeskRoutes.jsx'
+import DistributorAccessRoute from './DistributorAccessRoute.jsx'
+import WorkspaceHome from '../pages/WorkspaceHome.jsx'
+import AcceptRelationshipInvitation from '../pages/retailer/AcceptRelationshipInvitation.jsx'
 
 export const router = createBrowserRouter([
   {
@@ -19,6 +22,8 @@ export const router = createBrowserRouter([
   {
     element: <ProtectedRoute />,
     children: [
+      { path: '/workspace', element: <WorkspaceHome /> },
+      { path: '/retailer/invitations/:token', element: <AcceptRelationshipInvitation /> },
       retailerRoutes,
       salespersonRoutes,
       {
@@ -26,7 +31,7 @@ export const router = createBrowserRouter([
         children: [adminRoutes],
       },
       {
-        element: <RoleProtectedRoute allowedRoles={['ORDER_DESK', 'ADMIN']} fallbackPath="/retailer" />,
+        element: <DistributorAccessRoute />,
         children: [orderDeskRoutes],
       },
     ],

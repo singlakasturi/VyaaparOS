@@ -1,19 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useOutletContext, useParams, useSearchParams } from 'react-router-dom'
-import { AlertCircle, ArrowLeft, ArrowRight, Check, ChevronDown, Minus, Package, Plus, RefreshCw, Search, ShoppingBag, ShoppingCart, Sparkles, Tag, Trash2, Wifi, WifiOff } from 'lucide-react'
+import { AlertCircle, ArrowLeft, ArrowRight, Check, ChevronDown, Heart, Minus, Package, Plus, RefreshCw, Search, ShoppingBag, ShoppingCart, Sparkles, Tag, Trash2, Wifi, WifiOff } from 'lucide-react'
 import { fetchCategories, fetchProducts } from '../../services/catalog.js'
 import { addToCart, fetchCart, removeCartItem, updateCartQuantity } from '../../services/cart.js'
-import { fetchOrder, fetchOrders, placeOrder } from '../../services/order.js'
-import { addRetailerCartProduct, createOfflineRetailerOrder, createOrderSubmitter, getIndicativeCartTotals, getIndicativeFreeCases, getOrderHistoryRows, isCartLineAvailable, loadRetailerCart, loadRetailerCatalogue, removeRetailerCartItem, updateOfflineCartItems, updateRetailerCartItem } from '../../services/retailerOrdering.js'
+import { fetchOrder, fetchOrders, placeOrder, fetchOrderActionRequests, requestOrderCancellation, requestOrderReturn, fetchOrderInvoice, reorderHistoricalOrder } from '../../services/order.js'
+import { addRetailerCartProduct, canRequestCancellation, canRequestReturn, createOfflineRetailerOrder, createOrderSubmitter, getIndicativeCartTotals, getIndicativeFreeCases, getOrderHistoryRows, isCartLineAvailable, loadRetailerCart, loadRetailerCatalogue, removeRetailerCartItem, updateOfflineCartItems, updateRetailerCartItem } from '../../services/retailerOrdering.js'
 import { cacheCatalog, getCachedCatalog, saveDraft, savePendingRetailerOrder, getDraftsByRetailer, deleteDraft, DRAFT_STATUS } from '../../services/db.js'
 import { getEligibleRetailerOrders, getPendingRetailerOrders, syncAllDrafts, syncDraft } from '../../services/sync.js'
 import { checkBackendReachable } from '../../services/api.js'
+import { fetchRetailerFavorites, removeRetailerFavorite, saveRetailerFavorite } from '../../services/favorites.js'
 
 const money = (amount, currency = 'INR') => amount == null ? 'Price unavailable' : new Intl.NumberFormat('en-IN', { style: 'currency', currency }).format(Number(amount))
 const dateTime = (value) => value ? new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value)) : '—'
 const schemeText = (scheme) => {
   if (!scheme?.schemeAvailable) return null
-  if (scheme.schemeType === 'BUY_X_GET_Y' || (scheme.buyQuantity && scheme.freeQuantity)) return `${scheme.schemeName || 'Offer'} · Buy ${scheme.buyQuantity}, get ${scheme.freeQuantity} free`
+  if (scheme.schemeType === 'BUY_X_GET_Y_FREE' || scheme.schemeType === 'BUY_X_GET_Y' || (scheme.buyQuantity && scheme.freeQuantity)) return `${scheme.schemeName || 'Offer'} · Buy ${scheme.buyQuantity}, get ${scheme.freeQuantity} free`
   if (scheme.discountPercentage != null) return `${scheme.schemeName || 'Offer'} · ${scheme.discountPercentage}% off`
   return scheme.schemeName || 'Offer available'
 }
@@ -28,7 +29,7 @@ function StateCard({ title, children, action, retry }) {
 
 function SchemeBadge({ scheme }) {
   const text = schemeText(scheme)
-  return text ? <span className="retailer-scheme"><Tag size={14} />{text}</span> : null
+  return text ? <span className="retailer-scheme" title={[scheme.schemeDescription, scheme.schemeStartsAt && `From ${dateTime(scheme.schemeStartsAt)}`, scheme.schemeEndsAt && `Until ${dateTime(scheme.schemeEndsAt)}`].filter(Boolean).join(' · ')}><Tag size={14} />{text}{scheme.schemeEndsAt && <small>Until {dateTime(scheme.schemeEndsAt)}</small>}</span> : null
 }
 
 function RetailerCatalogue({ retailer, retailerId, cartCount, setCartCount, userId }) {
@@ -36,6 +37,8 @@ function RetailerCatalogue({ retailer, retailerId, cartCount, setCartCount, user
   const [category, setCategory] = useState('')
   const [query, setQuery] = useState('')
   const [products, setProducts] = useState([])
+  const [page, setPage] = useState(0)
+  const [hasMore, setHasMore] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [quantities, setQuantities] = useState({})
@@ -45,16 +48,21 @@ function RetailerCatalogue({ retailer, retailerId, cartCount, setCartCount, user
   const [expanded, setExpanded] = useState('')
   const [online, setOnline] = useState(() => navigator.onLine)
   const [stale, setStale] = useState(false)
+  const [needsDistributor, setNeedsDistributor] = useState(false)
+  const [favoriteIds, setFavoriteIds] = useState(() => new Set())
+  const [favoriteBusy, setFavoriteBusy] = useState('')
+  const [favoriteError, setFavoriteError] = useState('')
   const requestSequence = useRef(0)
 
   const load = useCallback(async () => {
     const requestId = ++requestSequence.current
-    setLoading(true); setError('')
+    setLoading(true); setError(''); if (page === 0) setNeedsDistributor(false)
     try {
-      const result = await loadRetailerCatalogue({ retailerId, category, query, fetchCategories, fetchProducts, cacheCatalog, getCachedCatalog })
+      const result = await loadRetailerCatalogue({ retailerId, category, query, page, size: 20, fetchCategories, fetchProducts, cacheCatalog, getCachedCatalog })
       if (requestId !== requestSequence.current) return
       setCategories(result.categories)
-      setProducts(result.products)
+      setProducts(current => page === 0 ? result.products : [...current, ...result.products.filter(item => !current.some(existing => existing.id === item.id))])
+      setHasMore(result.hasNext)
       setStale(result.stale)
       if (navigator.onLine && !result.stale) {
         try {
@@ -62,11 +70,24 @@ function RetailerCatalogue({ retailer, retailerId, cartCount, setCartCount, user
           if (requestId === requestSequence.current) setCartQuantities(Object.fromEntries((currentCart?.items || []).map((item) => [item.productId, Number(item.paidCases || 0)])))
         } catch { if (requestId === requestSequence.current) setCartQuantities({}) }
       } else setCartQuantities({})
-    } catch (err) { if (requestId === requestSequence.current) setError(err.message || 'Catalogue could not be loaded.') }
+    } catch (err) {
+      if (requestId === requestSequence.current) {
+        if (err.status === 403) { setNeedsDistributor(true); setProducts([]); setCategories([]); setHasMore(false) }
+        else setError(err.message || 'Catalogue could not be loaded.')
+      }
+    }
     finally { if (requestId === requestSequence.current) setLoading(false) }
-  }, [retailerId, category, query])
+  }, [retailerId, category, query, page])
 
   useEffect(() => { const timer = window.setTimeout(load, 180); return () => window.clearTimeout(timer) }, [load])
+  useEffect(() => {
+    let active = true
+    setFavoriteIds(new Set()); setFavoriteError('')
+    fetchRetailerFavorites(retailerId).then(rows => {
+      if (active) setFavoriteIds(new Set((rows || []).map(item => item.productId)))
+    }).catch(err => { if (active) setFavoriteError(err.message || 'Favorite status could not be loaded.') })
+    return () => { active = false }
+  }, [retailerId])
   useEffect(() => {
     const update = () => { setOnline(navigator.onLine); if (navigator.onLine) load() }
     window.addEventListener('online', update); window.addEventListener('offline', update)
@@ -114,22 +135,39 @@ function RetailerCatalogue({ retailer, retailerId, cartCount, setCartCount, user
     finally { setAdding('') }
   }
 
+  const toggleFavorite = async product => {
+    if (!online || favoriteBusy) { setFavoriteError(!online ? 'Connect to the internet to save favorites.' : 'Wait for the current favorite update to finish.'); return }
+    setFavoriteBusy(product.id); setFavoriteError('')
+    try {
+      if (favoriteIds.has(product.id)) {
+        await removeRetailerFavorite(retailerId, product.id)
+        setFavoriteIds(current => { const next = new Set(current); next.delete(product.id); return next })
+      } else {
+        await saveRetailerFavorite(retailerId, product.id)
+        setFavoriteIds(current => new Set(current).add(product.id))
+      }
+    } catch (err) { setFavoriteError(err.message || 'Favorite could not be updated.') }
+    finally { setFavoriteBusy('') }
+  }
+
   return <div className="retailer-page">
     <PageHeading eyebrow="ORDERING" title="Catalogue">
-      <Link className="retailer-button retailer-button-primary" to="/retailer/cart"><ShoppingCart size={17} />View cart <span className="retailer-count-pill">{cartCount}</span></Link>
+      <div className="retailer-catalog-header-actions"><Link className="retailer-button retailer-button-outline" to="/retailer/favorites"><Heart size={16}/>Favorites</Link><Link className="retailer-button retailer-button-primary" to="/retailer/cart"><ShoppingCart size={17} />View cart <span className="retailer-count-pill">{cartCount}</span></Link></div>
     </PageHeading>
     <section className="retailer-welcome"><div><span className="retailer-eyebrow">ORDERING FOR</span><h2>{retailer.businessName}</h2><p>{[retailer.city, retailer.state].filter(Boolean).join(', ') || 'Your business account'}</p></div><Link className="retailer-ai-link" to="/retailer/ai-assistant"><Sparkles size={17} />Quick order with AI<ArrowRight size={15} /></Link></section>
     <section className="retailer-catalog-tools" aria-label="Catalogue filters">
-      <label className="retailer-search"><Search size={18} /><input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by product name or SKU" aria-label="Search products" /></label>
-      <label className="retailer-category"><span className="sr-only">Filter category</span><select value={category} onChange={(event) => setCategory(event.target.value)} aria-label="Filter category"><option value="">All categories</option>{categories.map((item) => <option key={item.id || item.slug || item.name} value={item.slug || item.name}>{item.name}</option>)}</select><ChevronDown size={16} /></label>
+      <label className="retailer-search"><Search size={18} /><input type="search" value={query} onChange={(event) => { setPage(0); setQuery(event.target.value) }} placeholder="Search by product name or SKU" aria-label="Search products" /></label>
+      <label className="retailer-category"><span className="sr-only">Filter category</span><select value={category} onChange={(event) => { setPage(0); setCategory(event.target.value) }} aria-label="Filter category"><option value="">All categories</option>{categories.map((item) => <option key={item.id || item.slug || item.name} value={item.slug || item.name}>{item.name}</option>)}</select><ChevronDown size={16} /></label>
     </section>
     {notice && <div className={`retailer-notice ${/available|stock|exceed/i.test(notice) ? 'retailer-draft-error' : ''}`} role={/available|stock|exceed/i.test(notice) ? 'alert' : 'status'}>{/available|stock|exceed/i.test(notice) ? <AlertCircle size={17} /> : <Check size={17} />}{notice}</div>}
+    {favoriteError && <div className="retailer-inline-error" role="alert">{favoriteError}<button type="button" className="retailer-text-link" onClick={() => setFavoriteError('')}>Dismiss</button></div>}
     {!online && <p className="retailer-offline-note" role="status">Showing cached catalogue data. Prices, stock, and indicative scheme estimates may be out of date. Nothing is submitted until you place the order and synchronization is confirmed.</p>}
     {online && stale && <p className="retailer-offline-note" role="status">The backend could not be reached. Showing cached catalogue data; prices and stock may be out of date.</p>}
-    {loading ? <div className="retailer-product-grid">{Array.from({ length: 6 }, (_, index) => <div className="retailer-skeleton" key={index} />)}</div>
+    {needsDistributor ? <StateCard title="Connect with a distributor" action={<Link className="retailer-button retailer-button-primary" to="/retailer/distributor">Find or join a distributor<ArrowRight size={16}/></Link>}>Your current distributor catalog is available after an active relationship is established. You can request to join a distributor or accept an invitation.</StateCard>
+      : loading && page === 0 ? <div className="retailer-product-grid">{Array.from({ length: 6 }, (_, index) => <div className="retailer-skeleton" key={index} />)}</div>
       : error ? <StateCard title="We couldn't load the catalogue" retry={load}>{error}</StateCard>
         : products.length === 0 ? <StateCard title="No products found">Try a different search or category.</StateCard>
-          : <div className="retailer-product-grid">{products.map((product) => {
+          : <><div className="retailer-product-grid">{products.map((product) => {
             const quantity = quantities[product.id] || 1
             const alreadyInCart = cartQuantities[product.id] || 0
             const noStock = !stale && online && product.availableCases <= 0
@@ -139,13 +177,13 @@ function RetailerCatalogue({ retailer, retailerId, cartCount, setCartCount, user
               <h2>{product.name}</h2><p className="retailer-sku">SKU {product.sku || '—'}</p>
               <p className="retailer-pack">{product.caseDescription || `${product.unitsPerCase || '—'} units per case`}{product.unitQuantity && product.unitName ? ` · ${product.unitQuantity} ${product.unitName}` : ''}</p>
               <div className="retailer-product-price">{product.priceAvailable ? money(product.pricePerCase, product.currency) : <span className="retailer-unavailable">Price unavailable</span>}<small>per case</small></div>
-              <SchemeBadge scheme={{ schemeAvailable: product.schemeAvailable, schemeType: product.schemeType, schemeName: product.schemeName, buyQuantity: product.buyQuantity, freeQuantity: product.freeQuantity, discountPercentage: product.discountPercentage }} />
+              <SchemeBadge scheme={{ schemeAvailable: product.schemeAvailable, schemeType: product.schemeType, schemeName: product.schemeName, schemeDescription: product.schemeDescription, schemeStartsAt: product.schemeStartsAt, schemeEndsAt: product.schemeEndsAt, buyQuantity: product.buyQuantity, freeQuantity: product.freeQuantity, discountPercentage: product.discountPercentage }} />
               {expanded === product.id && <p className="retailer-product-description">{product.description || `Brand: ${product.brand || '—'}. Price and any offer are confirmed by the server at checkout.`}</p>}
               <div className="retailer-product-actions"><div className="retailer-quantity" aria-label={`Quantity for ${product.name}`}><button type="button" aria-label="Decrease quantity" onClick={() => setQuantities((prev) => ({ ...prev, [product.id]: Math.max(1, quantity - 1) }))}><Minus size={15} /></button><span>{quantity}</span><button type="button" aria-label="Increase quantity" onClick={() => { const next = quantity + 1; const required = alreadyInCart + next + getIndicativeFreeCases(product, alreadyInCart + next); if (online && !stale && required > product.availableCases) setNotice(`Only ${product.availableCases} cases available; ${alreadyInCart} already in your cart. Requested quantity would need ${required} including free cases.`); else setQuantities((prev) => ({ ...prev, [product.id]: next })) }} disabled={noStock}><Plus size={15} /></button></div><button className="retailer-button retailer-button-primary retailer-add-button" type="button" onClick={() => add(product)} disabled={noStock || (online && !stale && (!product.priceAvailable || exceedsStock)) || adding === product.id}>{adding === product.id ? 'Adding…' : 'Add to cart'}</button></div>
               {exceedsStock && <p className="retailer-draft-error" role="alert">Only {product.availableCases} cases available; {alreadyInCart} already in your cart.</p>}
-              <button className="retailer-details-toggle" type="button" aria-expanded={expanded === product.id} onClick={() => setExpanded(expanded === product.id ? '' : product.id)}>{expanded === product.id ? 'Less details' : 'Product details'}</button>
+              <div className="retailer-product-links"><button className="retailer-details-toggle" type="button" aria-expanded={expanded === product.id} onClick={() => setExpanded(expanded === product.id ? '' : product.id)}>{expanded === product.id ? 'Less details' : 'Quick details'}</button><Link className="retailer-details-toggle" to={`/retailer/products/${encodeURIComponent(product.id)}`}>View product</Link><button className={`retailer-favorite-toggle ${favoriteIds.has(product.id) ? 'is-favorite' : ''}`} type="button" aria-pressed={favoriteIds.has(product.id)} disabled={favoriteBusy === product.id} onClick={() => toggleFavorite(product)} aria-label={favoriteIds.has(product.id) ? `Remove ${product.name} from favorites` : `Save ${product.name} to favorites`} title={favoriteIds.has(product.id) ? 'Remove favorite' : 'Save favorite'}><Heart size={17} fill={favoriteIds.has(product.id) ? 'currentColor' : 'none'}/></button></div>
             </article>
-          })}</div>}
+          })}</div>{hasMore && <div className="retailer-load-more"><button className="retailer-button retailer-button-outline" type="button" disabled={loading} onClick={() => setPage(value => value + 1)}>{loading ? 'Loading…' : 'Load more products'}</button></div>}</>}
   </div>
 }
 
@@ -243,6 +281,7 @@ function RetailerCheckout({ retailer, retailerId, setCartCount, userId }) {
 }
 
 function OrderStatus({ status }) { const hold = status === 'CREDIT_HOLD'; return <span className={`retailer-status ${hold ? 'retailer-status-hold' : ''}`}>{String(status || 'UNKNOWN').replaceAll('_', ' ')}</span> }
+function FulfillmentStatus({ status }) { return <span className="retailer-fulfillment-status">{String(status || 'NOT_STARTED').replaceAll('_', ' ')}</span> }
 
 function RetailerOrders({ retailerId, userId }) {
   const [orders, setOrders] = useState([])
@@ -375,7 +414,7 @@ function RetailerOrders({ retailerId, userId }) {
     {error && <div className="retailer-inline-error" role="alert">{error}<button className="retailer-button retailer-button-outline" onClick={load} type="button">Refresh</button></div>}
     {!loading && <>
       <section className="retailer-review-card"><span className="retailer-eyebrow">PLACED ORDERS</span><h2>Confirmed by server</h2>
-        {!orders.length ? <p>Your placed orders will appear here. A local draft is not a placed order.</p> : <div className="retailer-orders-list">{getOrderHistoryRows(orders).map((order) => <Link className="retailer-order-row" key={order.id} to={`/retailer/orders/${order.id}`}><div><strong>{order.reference}</strong><span>{dateTime(order.createdAt)} · {order.itemCount} items</span></div><OrderStatus status={order.status} /><strong>{money(order.amount, order.currency)}</strong><ArrowRight className="retailer-order-arrow" size={17} /></Link>)}</div>}
+        {!orders.length ? <p>Your placed orders will appear here. A local draft is not a placed order.</p> : <div className="retailer-orders-list">{getOrderHistoryRows(orders).map((order) => <Link className="retailer-order-row" key={order.id} to={`/retailer/orders/${order.id}`}><div><strong>{order.reference}</strong><span>{dateTime(order.createdAt)} · {order.itemCount} items</span><small className="retailer-fulfillment-summary">Fulfillment · {String(order.fulfillmentStatus).replaceAll('_', ' ')}</small></div><OrderStatus status={order.status} /><strong>{money(order.amount, order.currency)}</strong><ArrowRight className="retailer-order-arrow" size={17} /></Link>)}</div>}
       </section>
       <section className="retailer-review-card retailer-drafts-card"><div className="retailer-drafts-heading"><div><span className="retailer-eyebrow">SAVED ON THIS DEVICE</span><h2>Offline orders & drafts <span className="retailer-draft-count">{drafts.length}</span></h2></div>{pendingOrders.length > 0 && syncButton}</div>
         {!drafts.length ? <p>No local orders or drafts. Orders placed offline will appear here for review and retry.</p> : <div className="retailer-drafts-list">{drafts.map((draft) => <article className="retailer-draft-row" key={draft.id}>
@@ -391,14 +430,94 @@ function RetailerOrders({ retailerId, userId }) {
   </div>
 }
 
-function RetailerOrderDetail() {
+function RetailerOrderDetail({ setCartCount }) {
   const { orderId } = useParams(); const [search] = useSearchParams(); const nav = useNavigate()
   const [order, setOrder] = useState(null); const [loading, setLoading] = useState(true); const [error, setError] = useState('')
+  const [invoiceBusy, setInvoiceBusy] = useState(false); const [invoiceError, setInvoiceError] = useState('')
+  const [reorderBusy, setReorderBusy] = useState(false); const [reorderError, setReorderError] = useState(''); const [reorderResult, setReorderResult] = useState(null)
   const load = useCallback(async () => { setLoading(true); setError(''); try { setOrder(await fetchOrder(orderId)) } catch (err) { setError(err.message || 'Order details could not be loaded.') } finally { setLoading(false) } }, [orderId])
   useEffect(() => { load() }, [load])
-  return <div className="retailer-page"><PageHeading eyebrow={search.get('confirmed') ? 'ORDER CONFIRMED' : 'ORDER DETAILS'} title={order?.orderNumber || 'Order details'}><Link className="retailer-text-link" to="/retailer/orders"><ArrowLeft size={16} />All orders</Link></PageHeading>
-    {loading ? <div className="retailer-state"><RefreshCw className="retailer-spin" />Loading order details…</div> : error ? <StateCard title="Order could not be loaded" retry={load}>{error}</StateCard> : order && <><div className={`retailer-confirmation ${order.status === 'CREDIT_HOLD' ? 'retailer-confirmation-hold' : ''}`}><span className="retailer-confirmation-mark">{order.status === 'CREDIT_HOLD' ? <AlertCircle size={22} /> : <Check size={22} />}</span><div><h2>{order.status === 'CREDIT_HOLD' ? 'Order placed · credit review required' : 'Order placed successfully'}</h2><p>{order.status === 'CREDIT_HOLD' ? order.creditHoldReason || 'This order is awaiting credit review.' : 'Your order has been received and is subject to fulfillment.'}</p></div><OrderStatus status={order.status} /></div><div className="retailer-order-summary-grid"><section className="retailer-review-card"><span className="retailer-eyebrow">ORDER INFO</span><dl><div><dt>Reference</dt><dd>{order.orderNumber || order.id}</dd></div><div><dt>Placed</dt><dd>{dateTime(order.createdAt)}</dd></div><div><dt>Status</dt><dd><OrderStatus status={order.status} /></dd></div>{order.creditHoldReason && <div><dt>Credit review</dt><dd>{order.creditHoldReason}</dd></div>}</dl></section><section className="retailer-review-card retailer-total-card"><span className="retailer-eyebrow">SERVER TOTAL</span><div><span>Subtotal</span><strong>{money(order.baseAmount, order.currency)}</strong></div><div><span>Discount</span><strong>−{money(order.discountAmount, order.currency)}</strong></div><div className="retailer-order-total"><span>Final amount</span><strong>{money(order.finalAmount, order.currency)}</strong></div></section></div><section className="retailer-review-card retailer-snapshot-card"><span className="retailer-eyebrow">ITEM PRICE SNAPSHOTS</span>{(order.items || []).map((item, index) => <div className="retailer-snapshot-row" key={`${item.productId}-${index}`}><div><strong>{item.name}</strong><small>SKU {item.sku || '—'} · {item.paidCases} paid + {item.freeCases} free = {item.totalCases} cases</small>{item.schemeName && <span className="retailer-scheme"><Tag size={14} />{item.schemeName}{item.schemeType ? ` · ${String(item.schemeType).replaceAll('_', ' ')}` : ''}</span>}</div><div><span>{money(item.unitPricePerCase, item.currency)} / case</span><strong>{money(item.finalAmount, item.currency)}</strong></div></div>)}</section><button className="retailer-button retailer-button-outline" onClick={() => nav('/retailer')} type="button">Back to catalogue</button></>}
+  const openInvoice = async () => {
+    if (invoiceBusy) return
+    const invoiceWindow = window.open('', '_blank')
+    setInvoiceBusy(true); setInvoiceError('')
+    try {
+      const { blob } = await fetchOrderInvoice(orderId)
+      const url = URL.createObjectURL(blob)
+      if (invoiceWindow) invoiceWindow.location.href = url
+      else { const link = document.createElement('a'); link.href = url; link.download = `order-${order?.orderNumber || orderId}-invoice.html`; link.click() }
+      window.setTimeout(() => URL.revokeObjectURL(url), 60000)
+    } catch (err) { invoiceWindow?.close(); setInvoiceError(err.message || 'Invoice could not be loaded.') }
+    finally { setInvoiceBusy(false) }
+  }
+  const reorder = async () => {
+    if (reorderBusy) return
+    setReorderBusy(true); setReorderError(''); setReorderResult(null)
+    try {
+      const result = await reorderHistoricalOrder(orderId)
+      setReorderResult(result)
+      setCartCount((result.cart?.items || []).reduce((sum, item) => sum + Number(item.paidCases || 0), 0))
+    } catch (err) { setReorderError(err.message || 'Products could not be added to your cart.') }
+    finally { setReorderBusy(false) }
+  }
+  return <div className="retailer-page"><PageHeading eyebrow={search.get('confirmed') ? 'ORDER CONFIRMED' : 'ORDER DETAILS'} title={order?.orderNumber || 'Order details'}><div className="retailer-order-header-actions"><Link className="retailer-text-link" to="/retailer/orders"><ArrowLeft size={16} />All orders</Link>{order?.items?.length > 0 && <button className="retailer-button retailer-button-primary" type="button" onClick={reorder} disabled={reorderBusy}>{reorderBusy ? 'Adding…' : 'Reorder'}</button>}</div></PageHeading>
+    {reorderError && <div className="retailer-inline-error" role="alert">{reorderError}<button className="retailer-text-link" type="button" onClick={reorder} disabled={reorderBusy}>Try again</button></div>}
+    {reorderResult && <section className="retailer-reorder-result" aria-live="polite"><div><strong>{reorderResult.addedProducts?.length ? `${reorderResult.addedProducts.length} product${reorderResult.addedProducts.length === 1 ? '' : 's'} added to your current cart.` : 'No products were added to your current cart.'}</strong>{reorderResult.addedProducts?.length > 0 && <p>{reorderResult.addedProducts.join(', ')}</p>}{reorderResult.unavailableProducts?.length > 0 && <><p className="retailer-reorder-unavailable-heading">These products could not be added:</p><ul>{reorderResult.unavailableProducts.map(item => <li key={item.productId}><strong>{item.productName}</strong> — {item.reason}</li>)}</ul></>}<Link className="retailer-button retailer-button-primary" to="/retailer/cart"><ShoppingCart size={16}/>Review current cart</Link></div></section>}
+    {loading ? <div className="retailer-state"><RefreshCw className="retailer-spin" />Loading order details…</div> : error ? <StateCard title="Order could not be loaded" retry={load}>{error}</StateCard> : order && <><div className={`retailer-confirmation ${order.status === 'CREDIT_HOLD' ? 'retailer-confirmation-hold' : ''}`}><span className="retailer-confirmation-mark">{order.status === 'CREDIT_HOLD' ? <AlertCircle size={22} /> : <Check size={22} />}</span><div><h2>{order.status === 'CREDIT_HOLD' ? 'Order placed · credit review required' : order.status === 'CANCELLED' ? 'Order cancelled' : 'Order placed successfully'}</h2><p>{order.status === 'CREDIT_HOLD' ? order.creditHoldReason || 'This order is awaiting credit review.' : order.status === 'CANCELLED' ? 'The distributor approved your cancellation request.' : 'Your order has been received and is subject to fulfillment.'}</p></div><OrderStatus status={order.status} /></div><div className="retailer-invoice-action"><button className="retailer-button retailer-button-outline" type="button" onClick={openInvoice} disabled={invoiceBusy}>{invoiceBusy ? 'Loading invoice…' : 'View / Download invoice'}</button>{invoiceError && <p role="alert">{invoiceError}</p>}</div><FulfillmentProgress order={order} /><RetailerOrderActionRequests order={order} /><div className="retailer-order-summary-grid"><section className="retailer-review-card"><span className="retailer-eyebrow">ORDER INFO</span><dl><div><dt>Reference</dt><dd>{order.orderNumber || order.id}</dd></div><div><dt>Placed</dt><dd>{dateTime(order.createdAt)}</dd></div><div><dt>Status</dt><dd><OrderStatus status={order.status} /></dd></div>{order.creditHoldReason && <div><dt>Credit review</dt><dd>{order.creditHoldReason}</dd></div>}</dl></section><section className="retailer-review-card retailer-total-card"><span className="retailer-eyebrow">SERVER TOTAL</span><div><span>Subtotal</span><strong>{money(order.baseAmount, order.currency)}</strong></div><div><span>Discount</span><strong>−{money(order.discountAmount, order.currency)}</strong></div><div className="retailer-order-total"><span>Final amount</span><strong>{money(order.finalAmount, order.currency)}</strong></div></section></div><section className="retailer-review-card retailer-snapshot-card"><span className="retailer-eyebrow">ITEM PRICE SNAPSHOTS</span>{(order.items || []).map((item, index) => <div className="retailer-snapshot-row" key={`${item.productId}-${index}`}><div><strong>{item.name}</strong><small>SKU {item.sku || '—'} · {item.paidCases} paid + {item.freeCases} free = {item.totalCases} cases</small>{item.schemeName && <span className="retailer-scheme"><Tag size={14} />{item.schemeName}{item.schemeType ? ` · ${String(item.schemeType).replaceAll('_', ' ')}` : ''}</span>}</div><div><span>{money(item.unitPricePerCase, item.currency)} / case</span><strong>{money(item.finalAmount, item.currency)}</strong></div></div>)}</section><button className="retailer-button retailer-button-outline" onClick={() => nav('/retailer')} type="button">Back to catalogue</button></>}
   </div>
+}
+
+function RetailerOrderActionRequests({ order }) {
+  const [requests,setRequests]=useState([])
+  const [loading,setLoading]=useState(true)
+  const [error,setError]=useState('')
+  const [requestType,setRequestType]=useState('')
+  const [reason,setReason]=useState('')
+  const [busy,setBusy]=useState(false)
+  const [notice,setNotice]=useState('')
+  const load=useCallback(async()=>{
+    setLoading(true);setError('')
+    try{const data=await fetchOrderActionRequests(order.id);setRequests(Array.isArray(data)?data:[])}
+    catch(err){setError(err.message||'Cancellation and return requests could not be loaded.')}
+    finally{setLoading(false)}
+  },[order.id])
+  useEffect(()=>{load()},[load])
+  const canCancel=canRequestCancellation(order,requests)
+  const canReturn=canRequestReturn(order,requests)
+  if(!loading&&!error&&!requests.length&&!canCancel&&!canReturn)return null
+  const submit=async(event)=>{
+    event.preventDefault();setError('');setNotice('')
+    if(requestType==='RETURN'&&!reason.trim()){setError('Enter a reason for the return request.');return}
+    setBusy(true)
+    try{
+      const created=requestType==='CANCELLATION'
+        ? await requestOrderCancellation(order.id,reason.trim())
+        : await requestOrderReturn(order.id,reason.trim())
+      setRequests(current=>[created,...current]);setRequestType('');setReason('')
+      setNotice('Request sent to the distributor for review.')
+    }catch(err){setError(err.message||'Your request could not be sent.')}
+    finally{setBusy(false)}
+  }
+  return <section className="retailer-review-card retailer-action-requests" aria-label="Cancellation and return requests">
+    <div className="retailer-fulfillment-heading"><div><span className="retailer-eyebrow">ORDER REQUESTS</span><h2>Cancellation & returns</h2></div></div>
+    {loading?<p className="retailer-request-state"><RefreshCw className="retailer-spin" size={16}/>Loading requests…</p>:error&&!requests.length?<div className="retailer-inline-error" role="alert">{error}<button className="retailer-text-link" type="button" onClick={load}>Retry</button></div>:<>
+      {requests.map(request=><article className="retailer-action-request-row" key={request.id}><div><strong>{request.requestType==='CANCELLATION'?'Cancellation':'Return'} request</strong><span className={`retailer-request-status retailer-request-${request.status?.toLowerCase()}`}>{request.status}</span></div>{request.reason&&<p>{request.reason}</p>}{request.decisionComment&&<small>Review note · {request.decisionComment}</small>}{request.decidedAt&&<small>Reviewed {dateTime(request.decidedAt)}</small>}</article>)}
+      {(canCancel||canReturn)&&!requestType&&<div className="retailer-action-request-buttons">{canCancel&&<button className="retailer-button retailer-button-outline" type="button" onClick={()=>{setRequestType('CANCELLATION');setReason('');setError('')}}>Request cancellation</button>}{canReturn&&<button className="retailer-button retailer-button-outline" type="button" onClick={()=>{setRequestType('RETURN');setReason('');setError('')}}>Request return</button>}</div>}
+      {requestType&&<form className="retailer-action-request-form" onSubmit={submit}><label className="retailer-notes"><span>{requestType==='RETURN'?'Return reason · required':'Cancellation details · optional'}</span><textarea value={reason} onChange={event=>setReason(event.target.value)} maxLength={500} required={requestType==='RETURN'} placeholder={requestType==='RETURN'?'Explain why you are requesting a return':'Add any details for the cancellation request'} /></label><div className="retailer-action-request-buttons"><button className="retailer-button retailer-button-outline" type="button" disabled={busy} onClick={()=>setRequestType('')}>Cancel</button><button className="retailer-button retailer-button-primary" type="submit" disabled={busy}>{busy?'Sending…':'Send request'}</button></div></form>}
+      {error&&<p className="retailer-inline-error" role="alert">{error}</p>}{notice&&<p className="retailer-notice" role="status">{notice}</p>}
+    </>}
+  </section>
+}
+
+function FulfillmentProgress({ order }) {
+  const steps=['NOT_STARTED','PREPARING','SHIPPED','DELIVERED']
+  const current=order.fulfillmentStatus || 'NOT_STARTED'
+  const reached=steps.indexOf(current)
+  return <section className="retailer-review-card retailer-fulfillment-card" aria-label="Order fulfillment progress">
+    <div className="retailer-fulfillment-heading"><div><span className="retailer-eyebrow">FULFILLMENT</span><h2>Order progress</h2></div><FulfillmentStatus status={current} /></div>
+    <ol className="retailer-fulfillment-steps">{steps.map((step,index)=><li className={index<=reached?'retailer-fulfillment-step-done':''} key={step}><span>{index < reached ? '✓' : index+1}</span><small>{step.replaceAll('_',' ')}</small></li>)}</ol>
+    <dl className="retailer-fulfillment-details">{order.trackingReference && <div><dt>Tracking reference</dt><dd>{order.trackingReference}</dd></div>}{order.fulfillmentStartedAt && <div><dt>Preparing since</dt><dd>{dateTime(order.fulfillmentStartedAt)}</dd></div>}{order.shippedAt && <div><dt>Shipped</dt><dd>{dateTime(order.shippedAt)}</dd></div>}{order.deliveredAt && <div><dt>Delivered</dt><dd>{dateTime(order.deliveredAt)}</dd></div>}</dl>
+  </section>
 }
 
 export function RetailerAccount() {

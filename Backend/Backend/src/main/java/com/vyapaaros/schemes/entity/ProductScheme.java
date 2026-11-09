@@ -1,6 +1,7 @@
 package com.vyapaaros.schemes.entity;
 
 import com.vyapaaros.catalog.entity.Product;
+import com.vyapaaros.catalog.entity.ProductCategory;
 import com.vyapaaros.distributor.entity.DistributorBusiness;
 import com.vyapaaros.retailer.entity.Retailer;
 import jakarta.persistence.*;
@@ -16,8 +17,10 @@ public class ProductScheme {
     private UUID id;
     @ManyToOne(fetch = FetchType.LAZY, optional = false) @JoinColumn(name = "distributor_id", nullable = false)
     private DistributorBusiness distributor;
-    @ManyToOne(fetch = FetchType.LAZY, optional = false) @JoinColumn(name = "product_id", nullable = false)
+    @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "product_id")
     private Product product;
+    @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "category_id")
+    private ProductCategory category;
     @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "retailer_id")
     private Retailer retailer;
     @Enumerated(EnumType.STRING) @Column(name = "scheme_type", nullable = false, length = 30)
@@ -35,6 +38,7 @@ public class ProductScheme {
     @Column(name = "updated_at", nullable = false) private Instant updatedAt;
     public ProductScheme() {}
     public UUID getId() { return id; } public Product getProduct() { return product; }
+    public ProductCategory getCategory() { return category; }
     public DistributorBusiness getDistributor() { return distributor; }
     public Retailer getRetailer() { return retailer; } public SchemeType getSchemeType() { return schemeType; }
     public String getName() { return name; } public String getDescription() { return description; }
@@ -45,7 +49,8 @@ public class ProductScheme {
     public Instant getUpdatedAt() { return updatedAt; }
     public void setId(UUID v) { id = v; }
     public void setDistributor(DistributorBusiness v) { distributor = v; }
-    public void setProduct(Product v) { product = v; } public void setRetailer(Retailer v) { retailer = v; }
+    public void setProduct(Product v) { product = v; } public void setCategory(ProductCategory v) { category = v; }
+    public void setRetailer(Retailer v) { retailer = v; }
     public void setSchemeType(SchemeType v) { schemeType = v; } public void setName(String v) { name = v; }
     public void setDescription(String v) { description = v; } public void setBuyQuantity(Integer v) { buyQuantity = v; }
     public void setFreeQuantity(Integer v) { freeQuantity = v; } public void setMinimumQuantity(Integer v) { minimumQuantity = v; }

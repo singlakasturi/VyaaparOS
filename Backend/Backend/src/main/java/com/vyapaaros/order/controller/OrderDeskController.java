@@ -17,12 +17,16 @@ public class OrderDeskController {
     private final OrderDeskService service;
     public OrderDeskController(OrderDeskService service) { this.service = service; }
 
+    @GetMapping("/overview")
+    public OrderDeskOverviewResponse overview(Authentication auth) { return service.overview(auth); }
+
     @GetMapping("/orders")
     public Page<OrderDeskOrderResponse> list(@RequestParam(required=false) OrderStatus status,
-        @RequestParam(required=false) UUID retailerId, @RequestParam(required=false) Instant startDate,
+        @RequestParam(required=false) UUID retailerId, @RequestParam(required=false) String q,
+        @RequestParam(required=false) Instant startDate,
         @RequestParam(required=false) Instant endDate, @RequestParam(defaultValue="0") int page,
         @RequestParam(defaultValue="20") int size, Authentication auth) {
-        return service.list(auth, status, retailerId, startDate, endDate,
+        return service.list(auth, status, retailerId, startDate, endDate, q,
             PageRequest.of(Math.max(0,page), Math.min(Math.max(1,size),100), Sort.by("createdAt").descending().and(Sort.by("id"))));
     }
 
@@ -37,6 +41,12 @@ public class OrderDeskController {
     @PostMapping("/orders/{id}/reject")
     public OrderDeskOrderResponse reject(@PathVariable UUID id, @Valid @RequestBody OrderDeskActionRequest request, Authentication auth) {
         return service.reject(auth, id, request.reason());
+    }
+
+    @PatchMapping("/orders/{id}/fulfillment")
+    public OrderDeskOrderResponse updateFulfillment(@PathVariable UUID id,
+        @Valid @RequestBody FulfillmentUpdateRequest request, Authentication auth) {
+        return service.updateFulfillment(auth, id, request);
     }
 
     @GetMapping("/orders/{id}/history")

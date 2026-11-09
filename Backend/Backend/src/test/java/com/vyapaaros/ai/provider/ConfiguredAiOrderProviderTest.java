@@ -31,4 +31,28 @@ public class ConfiguredAiOrderProviderTest {
         });
         assertTrue(exception.getMessage().contains("VYAPAAROS_AI_API_KEY"));
     }
+
+    @Test
+    void sourceTextControlsUnitAndUnstatedUnitsRemainAmbiguous() throws Exception {
+        ConfiguredAiOrderProvider provider = new ConfiguredAiOrderProvider(
+            new ObjectMapper(), "", "", "", 1000, null
+        );
+        ObjectMapper mapper = new ObjectMapper();
+        String generated = mapper.writeValueAsString(java.util.Map.of("items", java.util.List.of(
+            java.util.Map.of("originalText", "5 peti biscuit", "productDescription", "biscuit", "paidCases", 5, "unit", "PIECE", "confidence", 0.9),
+            java.util.Map.of("originalText", "2 biscuit", "productDescription", "biscuit", "paidCases", 2, "unit", "CASE", "unitAmbiguous", false, "confidence", 0.8),
+            java.util.Map.of("originalText", "1 piece tea", "productDescription", "tea", "paidCases", 1, "unit", "CASE", "confidence", 0.8)
+        )));
+        String response = mapper.writeValueAsString(java.util.Map.of("candidates", java.util.List.of(
+            java.util.Map.of("content", java.util.Map.of("parts", java.util.List.of(java.util.Map.of("text", generated))))
+        )));
+        var items = provider.parseItems(response);
+
+        assertEquals("CASE", items.get(0).unit());
+        assertEquals(false, items.get(0).unitAmbiguous());
+        assertEquals("CASE", items.get(1).unit());
+        assertEquals(true, items.get(1).unitAmbiguous());
+        assertEquals("PIECE", items.get(2).unit());
+        assertEquals(false, items.get(2).unitAmbiguous());
+    }
 }

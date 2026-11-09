@@ -1,5 +1,6 @@
 import { NavLink } from 'react-router-dom'
 import { LogOut, Menu } from 'lucide-react'
+import NotificationBell from './NotificationBell.jsx'
 
 export function Brand() {
   return (
@@ -33,6 +34,7 @@ export function SidebarNavigation({ items, title = 'Workspace', isOpen = false, 
   return (
     <aside className={`app-sidebar${isOpen ? ' app-sidebar-open' : ''}`}>
       <Brand />
+      <div className="sidebar-notifications"><NotificationBell /></div>
       <p className="navigation-title">{title}</p>
       <nav className="navigation-list" aria-label={`${title} navigation`}>
         {items.map((item) => (
@@ -61,6 +63,7 @@ export function MobileHeader({ title, onMenuClick }) {
   return (
     <header className="mobile-header">
       <Brand />
+      <NotificationBell />
       <button
         aria-label={`Open ${title} navigation`}
         className="navigation-menu-button"

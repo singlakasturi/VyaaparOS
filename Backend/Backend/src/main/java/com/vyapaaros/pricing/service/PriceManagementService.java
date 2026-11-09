@@ -53,9 +53,22 @@ public class PriceManagementService {
         Product product = productRepository.findById(productId)
             .orElseThrow(() -> new ResourceNotFoundException("Product not found."));
         requireManagementAccess(authentication, product.getDistributor().getId());
-        ProductPrice price = priceRepository
-            .findByProductIdAndRetailerIsNullAndActiveTrue(productId)
-            .orElseGet(ProductPrice::new);
+        ProductPrice price = saveCurrentDefault(product, request);
+        return price;
+    }
+
+    private ProductPrice saveCurrentDefault(Product product, PriceRequest request) {
+        ProductPrice price = priceRepository.findByProductIdAndDistributorIdAndRetailerIsNullAndActiveTrue(
+            product.getId(), product.getDistributor().getId()).orElse(null);
+        if (price != null && price.getPricePerCase().compareTo(request.pricePerCase()) == 0
+            && java.util.Objects.equals(price.getCurrency(), request.currency())
+            && java.util.Objects.equals(price.getGstIncluded(), request.gstIncluded())) return price;
+        if (price != null) {
+            price.setActive(false);
+            price.setUpdatedAt(Instant.now());
+            priceRepository.save(price);
+        }
+        price = new ProductPrice();
         initialize(price, product, null);
         apply(price, request);
         return save(price);
@@ -75,8 +88,17 @@ public class PriceManagementService {
         requireManagementAccess(authentication, product.getDistributor().getId());
         authorization.requireActiveRetailerLink(retailerId, product.getDistributor().getId());
         ProductPrice price = priceRepository
-            .findByProductIdAndRetailerIdAndActiveTrue(productId, retailerId)
-            .orElseGet(ProductPrice::new);
+            .findByProductIdAndDistributorIdAndRetailerIdAndActiveTrue(productId, product.getDistributor().getId(), retailerId)
+            .orElse(null);
+        if (price != null && price.getPricePerCase().compareTo(request.pricePerCase()) == 0
+            && java.util.Objects.equals(price.getCurrency(), request.currency())
+            && java.util.Objects.equals(price.getGstIncluded(), request.gstIncluded())) return price;
+        if (price != null) {
+            price.setActive(false);
+            price.setUpdatedAt(Instant.now());
+            priceRepository.save(price);
+        }
+        if (price == null || !price.isActive()) price = new ProductPrice();
         initialize(price, product, retailer);
         apply(price, request);
         return save(price);
@@ -88,14 +110,45 @@ public class PriceManagementService {
         UUID retailerId,
         UUID productId
     ) {
+        Product product = productRepository.findById(productId)
+            .orElseThrow(() -> new ResourceNotFoundException("Product not found."));
         ProductPrice price = priceRepository
-            .findByProductIdAndRetailerIdAndActiveTrue(productId, retailerId)
+            .findByProductIdAndDistributorIdAndRetailerIdAndActiveTrue(productId, product.getDistributor().getId(), retailerId)
             .orElseThrow(() -> new ResourceNotFoundException("Retailer price not found."));
         requireManagementAccess(authentication, price.getDistributor().getId());
         authorization.requireActiveRetailerLink(retailerId, price.getDistributor().getId());
         price.setActive(false);
         price.setUpdatedAt(Instant.now());
         priceRepository.save(price);
+    }
+
+    @Transactional
+    public void deactivateDefault(Authentication authentication, UUID productId) {
+        Product product = productRepository.findById(productId)
+            .orElseThrow(() -> new ResourceNotFoundException("Product not found."));
+        requireManagementAccess(authentication, product.getDistributor().getId());
+        ProductPrice price = priceRepository.findByProductIdAndDistributorIdAndRetailerIsNullAndActiveTrue(
+            productId, product.getDistributor().getId()).orElseThrow(() -> new ResourceNotFoundException("Default price not found."));
+        price.setActive(false);
+        price.setUpdatedAt(Instant.now());
+        priceRepository.save(price);
+    }
+
+    @Transactional(readOnly = true)
+    public java.util.List<com.vyapaaros.pricing.dto.ManagedPriceResponse> listDefaults(UUID userId) {
+        UUID distributorId = businessId(userId);
+        return priceRepository.findManagedDefaults(distributorId).stream()
+            .map(com.vyapaaros.pricing.dto.ManagedPriceResponse::from).toList();
+    }
+
+    @Transactional(readOnly = true)
+    public com.vyapaaros.pricing.dto.ManagedPriceResponse getDefault(UUID userId, UUID productId) {
+        UUID distributorId = businessId(userId);
+        Product product = productRepository.findByIdAndDistributorId(productId, distributorId)
+            .orElseThrow(() -> new ResourceNotFoundException("Product not found."));
+        return priceRepository.findByProductIdAndDistributorIdAndRetailerIsNullAndActiveTrue(productId, distributorId)
+            .map(com.vyapaaros.pricing.dto.ManagedPriceResponse::from)
+            .orElseGet(() -> com.vyapaaros.pricing.dto.ManagedPriceResponse.unpriced(product));
     }
 
     private void initialize(ProductPrice price, Product product, Retailer retailer) {
@@ -130,5 +183,14 @@ public class PriceManagementService {
             throw new AccessDeniedException("Price management access denied.");
         }
         authorization.requireOrderDeskAccess(userId, distributorId);
+    }
+
+    private UUID businessId(UUID userId) {
+        if (authorization == null) throw new AccessDeniedException("Price management access denied.");
+        java.util.Set<UUID> ids = authorization.activeOrderDeskBusinessIds(userId);
+        if (ids.size() != 1) throw new AccessDeniedException("Select a single authorized distributor workspace.");
+        UUID id = ids.iterator().next();
+        authorization.requireOrderDeskAccess(userId, id);
+        return id;
     }
 }

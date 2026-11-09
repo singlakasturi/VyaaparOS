@@ -22,7 +22,6 @@ import java.util.UUID;
 @RequestMapping("/api/catalog")
 public class CatalogController {
 
-    private static final int DEFAULT_PAGE_SIZE = 20;
     private static final int MAX_PAGE_SIZE = 100;
 
     private final CatalogService catalogService;

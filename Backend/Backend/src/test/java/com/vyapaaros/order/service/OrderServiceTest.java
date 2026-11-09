@@ -5,6 +5,7 @@ import com.vyapaaros.catalog.entity.ProductCategory;
 import com.vyapaaros.catalog.repository.ProductRepository;
 import com.vyapaaros.common.exception.ResourceConflictException;
 import com.vyapaaros.inventory.repository.InventoryRepository;
+import com.vyapaaros.inventory.service.InventoryMovementService;
 import com.vyapaaros.inventory.entity.Inventory;
 import com.vyapaaros.common.exception.InsufficientStockException;
 import com.vyapaaros.order.dto.OrderItemRequest;
@@ -12,6 +13,9 @@ import com.vyapaaros.order.dto.OrderRequest;
 import com.vyapaaros.order.dto.OrderResponse;
 import com.vyapaaros.order.entity.Order;
 import com.vyapaaros.order.entity.OrderStatus;
+import com.vyapaaros.order.entity.Cart;
+import com.vyapaaros.order.entity.CartItem;
+import com.vyapaaros.order.entity.CartStatus;
 import com.vyapaaros.order.repository.CartRepository;
 import com.vyapaaros.order.repository.OrderRepository;
 import com.vyapaaros.pricing.dto.PriceSource;
@@ -51,6 +55,7 @@ class OrderServiceTest {
     private final SchemeResolutionService schemeResolutionService = mock(SchemeResolutionService.class);
     private final InventoryRepository inventoryRepository = mock(InventoryRepository.class);
     private final ProductRepository productRepository = mock(ProductRepository.class);
+    private final InventoryMovementService inventoryMovementService = mock(InventoryMovementService.class);
 
     private OrderService orderService;
 
@@ -76,7 +81,8 @@ class OrderServiceTest {
             priceResolutionService,
             schemeResolutionService,
             inventoryRepository,
-            productRepository
+            productRepository,
+            inventoryMovementService
         );
 
         orderService = new OrderService(
@@ -88,7 +94,9 @@ class OrderServiceTest {
             priceResolutionService,
             schemeResolutionService,
             inventoryRepository,
-            productRepository
+            productRepository,
+            null,
+            inventoryMovementService
         );
 
         auth = new UsernamePasswordAuthenticationToken(
@@ -192,6 +200,7 @@ class OrderServiceTest {
         verify(orderRepository).save(argThat(order -> order.getDistributor() == distributor));
         verify(inventoryRepository).reserve(productId, distributor.getId(), 5);
         verify(orderRepository).save(any(Order.class));
+        verify(inventoryMovementService).orderReservation(any(Order.class), eq(salespersonUser));
     }
 
     @Test
@@ -316,6 +325,62 @@ class OrderServiceTest {
         assertThrows(com.vyapaaros.common.exception.ResourceNotFoundException.class, () -> orderService.place(auth, request));
         verifyNoInteractions(priceResolutionService, schemeResolutionService, inventoryRepository);
         verify(orderRepository, never()).save(any());
+    }
+
+    @Test
+    void staleCartProductFromPreviousDistributorIsRejectedBeforePricingOrReservation() {
+        when(orderRepository.findByRetailerIdAndClientOrderId(retailerId, clientOrderId)).thenReturn(Optional.empty());
+        Cart cart = new Cart();
+        cart.setStatus(CartStatus.ACTIVE);
+        CartItem item = new CartItem();
+        item.setProduct(activeProduct);
+        item.setPaidCases(2);
+        cart.addItem(item);
+        when(cartRepository.findActiveForUpdate(salespersonId, retailerId)).thenReturn(Optional.of(cart));
+        when(productRepository.findByIdAndDistributorIdAndActiveTrue(productId, distributor.getId())).thenReturn(Optional.empty());
+
+        OrderRequest request = new OrderRequest(retailerId, clientOrderId, null, null);
+        assertThrows(com.vyapaaros.common.exception.ResourceNotFoundException.class,
+            () -> orderService.place(auth, request));
+
+        verify(cartRepository).findActiveForUpdate(salespersonId, retailerId);
+        verifyNoInteractions(priceResolutionService, schemeResolutionService, inventoryRepository);
+        verify(orderRepository, never()).save(any());
+    }
+
+    @Test
+    void historicalOrderReadUsesRetailerMembershipWithoutRequiringCurrentDistributor() {
+        Order historical = new Order();
+        historical.setId(UUID.randomUUID());
+        historical.setRetailer(activeRetailer);
+        historical.setDistributor(distributor);
+        historical.setCreatedBy(salespersonUser);
+        historical.setStatus(OrderStatus.REJECTED);
+        historical.setBaseAmount(new BigDecimal("42.00"));
+        historical.setDiscountAmount(BigDecimal.ZERO);
+        historical.setFinalAmount(new BigDecimal("42.00"));
+        historical.setCurrency("INR");
+        when(orderRepository.findDetailed(historical.getId())).thenReturn(Optional.of(historical));
+
+        OrderResponse response = orderService.get(auth, historical.getId());
+
+        assertEquals(OrderStatus.REJECTED, response.status());
+        verify(orderScopeService).requireHistoricalOrderAccess(salespersonId, retailerId, auth);
+        verify(orderScopeService, never()).require(any(), any(), any());
+    }
+
+    @Test
+    void retailerCannotReadAnotherRetailersHistoricalOrder() {
+        UUID otherRetailerId = UUID.randomUUID();
+        Retailer otherRetailer = new Retailer(); otherRetailer.setId(otherRetailerId);
+        Order otherRetailerOrder = new Order();
+        otherRetailerOrder.setId(UUID.randomUUID());
+        otherRetailerOrder.setRetailer(otherRetailer);
+        when(orderRepository.findDetailed(otherRetailerOrder.getId())).thenReturn(Optional.of(otherRetailerOrder));
+        doThrow(new AccessDeniedException("not a member"))
+            .when(orderScopeService).requireHistoricalOrderAccess(salespersonId, otherRetailerId, auth);
+
+        assertThrows(AccessDeniedException.class, () -> orderService.get(auth, otherRetailerOrder.getId()));
     }
 
     @Test

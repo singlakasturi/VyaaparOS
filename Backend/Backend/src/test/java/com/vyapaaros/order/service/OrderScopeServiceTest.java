@@ -38,6 +38,18 @@ class OrderScopeServiceTest {
     }
 
     @Test
+    void historicalOrdersRemainVisibleToRetailerMemberAfterRelationshipEnds() {
+        when(retailers.existsById(retailerId)).thenReturn(true);
+        DistributorAuthorizationService businessAuthorization = mock(DistributorAuthorizationService.class);
+        OrderScopeService scopedService = new OrderScopeService(retailers, authorization, businessAuthorization);
+
+        scopedService.requireHistoricalOrderAccess(userId, retailerId, auth("ROLE_RETAILER"));
+
+        verify(authorization).requireMembership(userId, retailerId);
+        verifyNoInteractions(businessAuthorization);
+    }
+
+    @Test
     void endedDistributorRelationshipBlocksRetailerOperationsDespiteMembership() {
         when(retailers.existsById(retailerId)).thenReturn(true);
         DistributorAuthorizationService businessAuthorization=mock(DistributorAuthorizationService.class);

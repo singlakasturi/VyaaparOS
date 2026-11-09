@@ -1,0 +1,11 @@
+import { useEffect, useState } from 'react'
+import { Link, useParams } from 'react-router-dom'
+import { fetchMyRetailers } from '../../services/retailer.js'
+import { acceptRelationshipInvitation, fetchInvitationPreview } from '../../services/relationships.js'
+import '../orderDesk/OrderDeskRelationships.css'
+
+export default function AcceptRelationshipInvitation(){const {token}=useParams();const[preview,setPreview]=useState(null);const[retailers,setRetailers]=useState([]);const[selected,setSelected]=useState('');const[busy,setBusy]=useState(true);const[error,setError]=useState('');const[done,setDone]=useState(false)
+ useEffect(()=>{Promise.all([fetchInvitationPreview(token),fetchMyRetailers()]).then(([p,r])=>{setPreview(p);setRetailers(r||[]);if(r?.length===1)setSelected(r[0].id)}).catch(e=>setError(e.message)).finally(()=>setBusy(false))},[token])
+ const accept=async()=>{setBusy(true);setError('');try{await acceptRelationshipInvitation(token,selected);setDone(true)}catch(e){setError(e.message)}finally{setBusy(false)}}
+ return <main className="invitation-screen"><section className="relationship-panel"><p className="workspace-eyebrow">DISTRIBUTOR INVITATION</p><h1>Join a distributor</h1>{error&&<p className="relationship-alert" role="alert">{error}</p>}{busy&&!preview?<p>Loading invitation…</p>:done?<><p>You accepted the invitation. Your retailer is now linked.</p><Link className="relationship-button" to="/retailer">Open retailer workspace</Link></>:preview&&<><p><strong>{preview.distributorName}</strong> invited <strong>{preview.invitedEmail}</strong>.</p><p>Choose your retailer business and confirm to accept. Opening this link has not changed your access.</p>{retailers.length?<><label className="relationship-select">Retailer business<select value={selected} onChange={(e)=>setSelected(e.target.value)}><option value="">Select a business</option>{retailers.map(r=><option key={r.id} value={r.id}>{r.businessName}</option>)}</select></label><button className="relationship-button" disabled={!selected||busy} onClick={accept}>{busy?'Accepting…':'Accept invitation'}</button></>:<p>No retailer business is linked to this account yet. Create a retailer workspace before accepting.</p>}</>}</section></main>
+}

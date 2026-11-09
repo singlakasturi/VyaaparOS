@@ -114,14 +114,34 @@ public class CatalogService {
         return getProduct(auth, productId, retailerId, null);
     }
 
+    @Transactional(readOnly = true)
+    public ProductResponse favoriteDetails(Authentication auth, UUID retailerId, Product product) {
+        UUID distributorId = product.getDistributor().getId();
+        int availableCases = inventoryRepository.findByProductIdAndDistributorId(product.getId(), distributorId)
+            .map(row -> row.getAvailableCases()).orElse(0);
+        if (!product.isActive() || !product.getCategory().isActive()) {
+            return ProductResponse.from(product, availableCases, ResolvedPrice.unavailable(), SchemeSummary.unavailable());
+        }
+        ResolvedPrice price = priceResolutionService.resolve(auth, retailerId, distributorId, List.of(product.getId()))
+            .getOrDefault(product.getId(), ResolvedPrice.unavailable());
+        SchemeSummary scheme = schemeResolutionService == null ? SchemeSummary.unavailable()
+            : schemeResolutionService.summaries(auth, retailerId, distributorId, List.of(product.getId()))
+                .getOrDefault(product.getId(), SchemeSummary.unavailable());
+        return ProductResponse.from(product, availableCases, price, scheme);
+    }
+
     private UUID resolveBusiness(Authentication auth, UUID retailerId, UUID distributorId) {
         if (authorization == null || auth == null || !auth.isAuthenticated()
             || !(auth.getPrincipal() instanceof UUID userId)) throw denied();
         boolean retailer = auth.getAuthorities().stream().map(GrantedAuthority::getAuthority)
             .anyMatch("ROLE_RETAILER"::equals);
-        if (retailer && retailerId != null && distributorId == null)
+        boolean orderDesk = auth.getAuthorities().stream().map(GrantedAuthority::getAuthority)
+            .anyMatch("ROLE_ORDER_DESK"::equals);
+        if (retailer) {
+            if (retailerId == null || distributorId != null) throw denied();
             return authorization.requireBusinessAccess(userId, retailerId, null, false);
-        if (retailerId == null && distributorId != null)
+        }
+        if (orderDesk && retailerId == null && distributorId != null)
             return authorization.requireBusinessAccess(userId, null, distributorId, true);
         throw denied();
     }

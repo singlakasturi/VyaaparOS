@@ -67,6 +67,10 @@ export async function apiRequest(path, options = {}) {
     window.dispatchEvent(new CustomEvent('vyapaaros:session-expired'))
   }
 
+  if (response.status === 403) {
+    window.dispatchEvent(new CustomEvent('vyapaaros:access-denied', { detail: { path } }))
+  }
+
   if (!response.ok) {
     const message = typeof payload === 'string'
       ? payload
@@ -120,6 +124,9 @@ export async function apiDownload(path, options = {}) {
   if (response.status === 401) {
     setAccessToken(null)
     window.dispatchEvent(new CustomEvent('vyapaaros:session-expired'))
+  }
+  if (response.status === 403) {
+    window.dispatchEvent(new CustomEvent('vyapaaros:access-denied', { detail: { path } }))
   }
   if (!response.ok) {
     const payload = await parseResponse(response)

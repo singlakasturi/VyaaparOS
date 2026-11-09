@@ -49,18 +49,18 @@ class PriceManagementServiceTest {
     }
 
     @Test
-    void adminCreatesAndUpdatesDefaultPrice() {
+    void authorizedOrderDeskCreatesDefaultPrice() {
         Product product = new Product();
         product.setId(productId);
         product.setDistributor(distributor);
         when(productRepository.findById(productId)).thenReturn(Optional.of(product));
-        when(priceRepository.findByProductIdAndRetailerIsNullAndActiveTrue(productId))
+        when(priceRepository.findByProductIdAndDistributorIdAndRetailerIsNullAndActiveTrue(productId, distributor.getId()))
             .thenReturn(Optional.empty());
         when(priceRepository.save(any(ProductPrice.class)))
             .thenAnswer(invocation -> invocation.getArgument(0));
 
         ProductPrice price = service.upsertDefault(
-            authentication("ROLE_ADMIN", userId),
+            authentication("ROLE_ORDER_DESK", userId),
             productId,
             new PriceRequest(new BigDecimal("8.10"), "INR", null)
         );
@@ -76,7 +76,8 @@ class PriceManagementServiceTest {
         ProductPrice existing = new ProductPrice();
         existing.setActive(true);
         existing.setDistributor(distributor);
-        when(priceRepository.findByProductIdAndRetailerIdAndActiveTrue(productId, retailerId))
+        when(productRepository.findById(productId)).thenReturn(Optional.of(product(productId)));
+        when(priceRepository.findByProductIdAndDistributorIdAndRetailerIdAndActiveTrue(productId, distributor.getId(), retailerId))
             .thenReturn(Optional.of(existing));
 
         service.deactivateOverride(
@@ -106,7 +107,7 @@ class PriceManagementServiceTest {
         assertThrows(
             ResourceNotFoundException.class,
             () -> service.upsertDefault(
-                authentication("ROLE_ADMIN"),
+                authentication("ROLE_ORDER_DESK"),
                 productId,
                 new PriceRequest(BigDecimal.ONE, "INR", Boolean.FALSE)
             )
@@ -116,7 +117,7 @@ class PriceManagementServiceTest {
         assertThrows(
             ResourceNotFoundException.class,
             () -> service.upsertOverride(
-                authentication("ROLE_ADMIN"),
+                authentication("ROLE_ORDER_DESK"),
                 retailerId,
                 productId,
                 new PriceRequest(BigDecimal.ONE, "INR", Boolean.FALSE)
@@ -124,7 +125,33 @@ class PriceManagementServiceTest {
         );
     }
 
+    @Test
+    void priceChangesArchivePreviousActivePrice() {
+        Product product = product(productId);
+        ProductPrice old = new ProductPrice();
+        old.setPricePerCase(new BigDecimal("10.00")); old.setCurrency("INR"); old.setGstIncluded(false); old.setActive(true);
+        when(productRepository.findById(productId)).thenReturn(Optional.of(product));
+        when(priceRepository.findByProductIdAndDistributorIdAndRetailerIsNullAndActiveTrue(productId, distributor.getId()))
+            .thenReturn(Optional.of(old));
+        when(priceRepository.save(any(ProductPrice.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        ProductPrice updated = service.upsertDefault(authentication("ROLE_ORDER_DESK"), productId,
+            new PriceRequest(new BigDecimal("12.50"), "INR", false));
+        assertFalse(old.isActive()); assertNotSame(old, updated);
+        assertEquals(new BigDecimal("12.50"), updated.getPricePerCase()); verify(priceRepository).save(old);
+    }
+
+    @Test
+    void legacyGrantWithoutMembershipCannotManageDefaultPrice() {
+        when(productRepository.findById(productId)).thenReturn(Optional.of(product(productId)));
+        doThrow(new AccessDeniedException("no active membership"))
+            .when(authorization).requireOrderDeskAccess(userId, distributor.getId());
+        assertThrows(AccessDeniedException.class, () -> service.upsertDefault(authentication("ROLE_ADMIN"), productId,
+            new PriceRequest(BigDecimal.ONE, "INR", false)));
+        verify(priceRepository, never()).save(any());
+    }
+
     private UsernamePasswordAuthenticationToken authentication(String role) { return authentication(role, userId); }
+    private Product product(UUID id) { Product product = new Product(); product.setId(id); product.setDistributor(distributor); return product; }
     private UsernamePasswordAuthenticationToken authentication(String role, UUID user) {
         return new UsernamePasswordAuthenticationToken(
             user,

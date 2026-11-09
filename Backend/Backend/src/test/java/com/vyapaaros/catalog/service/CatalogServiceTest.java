@@ -1,6 +1,7 @@
 package com.vyapaaros.catalog.service;
 
 import com.vyapaaros.catalog.entity.*;
+import com.vyapaaros.catalog.dto.ProductResponse;
 import com.vyapaaros.catalog.repository.*;
 import com.vyapaaros.distributor.entity.*;
 import com.vyapaaros.distributor.entity.RetailerDistributorRelationship.RelationshipStatus;
@@ -83,6 +84,55 @@ class CatalogServiceTest {
         assertThrows(AccessDeniedException.class, () -> service.listCategories(auth("ROLE_ORDER_DESK"), null, null));
         assertThrows(AccessDeniedException.class, () -> service.listCategories(auth("ROLE_RETAILER"), retailerId, UUID.randomUUID()));
         verifyNoInteractions(categories);
+    }
+
+    @Test void rejectsDualRoleRetailerWhenDistributorIsClientSelected() {
+        Authentication dualRole = new UsernamePasswordAuthenticationToken(userId, null, List.of(
+            new SimpleGrantedAuthority("ROLE_RETAILER"), new SimpleGrantedAuthority("ROLE_ORDER_DESK")));
+        assertThrows(AccessDeniedException.class,
+            () -> service.listCategories(dualRole, null, distributorId));
+        assertThrows(AccessDeniedException.class,
+            () -> service.listProducts(dualRole, null, null, PageRequest.of(0, 20), retailerId, distributorId));
+        verifyNoInteractions(categories, products);
+    }
+
+    @Test void rejectsNoAndEndedRelationshipsBeforeCatalogReads() {
+        when(relationships.findFirstByRetailerIdAndStatusOrderByStartedAtDesc(retailerId, RelationshipStatus.ACTIVE))
+            .thenReturn(Optional.empty());
+        assertThrows(AccessDeniedException.class, () -> service.listCategories(auth("ROLE_RETAILER"), retailerId, null));
+        assertThrows(AccessDeniedException.class, () -> service.listProducts(auth("ROLE_RETAILER"), null, null,
+            PageRequest.of(0, 20), retailerId, null));
+        verifyNoInteractions(categories, products);
+    }
+
+    @Test void productSearchRespectsPageAndUnavailablePriceIsPreserved() {
+        Product product = product(category("biscuits", "Biscuits"));
+        PageRequest pageable = PageRequest.of(1, 5);
+        when(products.searchActive("sku-75", null, distributorId, pageable))
+            .thenReturn(new PageImpl<>(List.of(product), pageable, 13));
+        when(prices.resolve(any(), eq(retailerId), eq(distributorId), eq(List.of(productId))))
+            .thenReturn(Map.of(productId, ResolvedPrice.unavailable()));
+        when(schemes.summaries(any(), eq(retailerId), eq(distributorId), eq(List.of(productId))))
+            .thenReturn(Map.of(productId, SchemeSummary.unavailable()));
+        when(inventory.findByProductIdInAndDistributorId(List.of(productId), distributorId)).thenReturn(List.of());
+        var page = service.listProducts(auth("ROLE_RETAILER"), " sku-75 ", null, pageable, retailerId, null);
+        assertEquals(13, page.getTotalElements()); assertEquals(1, page.getNumber());
+        assertFalse(page.getContent().get(0).priceAvailable()); assertNull(page.getContent().get(0).pricePerCase());
+        verify(products).searchActive("sku-75", null, distributorId, pageable);
+    }
+
+    @Test void productDetailResolvesCurrentPriceAndSelectedSchemeFromServer() {
+        Product product = product(category("biscuits", "Biscuits"));
+        when(products.findByIdAndDistributorIdAndActiveTrue(productId, distributorId)).thenReturn(Optional.of(product));
+        when(inventory.findByProductIdAndDistributorId(productId, distributorId)).thenReturn(Optional.empty());
+        ResolvedPrice resolved = new ResolvedPrice(true, new BigDecimal("120.00"), "INR", null, false);
+        SchemeSummary scheme = new SchemeSummary(true, UUID.randomUUID(), com.vyapaaros.schemes.entity.SchemeType.SLAB_DISCOUNT,
+            "5% offer", "Five percent from 3 cases", null, null, "PRODUCT", null, null, 3, new BigDecimal("5"));
+        when(prices.resolve(any(), eq(retailerId), eq(distributorId), eq(List.of(productId)))).thenReturn(Map.of(productId, resolved));
+        when(schemes.summaries(any(), eq(retailerId), eq(distributorId), eq(List.of(productId)))).thenReturn(Map.of(productId, scheme));
+        ProductResponse response = service.getProduct(auth("ROLE_RETAILER"), productId, retailerId, null);
+        assertTrue(response.priceAvailable()); assertEquals(new BigDecimal("120.00"), response.pricePerCase());
+        assertEquals("5% offer", response.schemeName()); assertEquals("Five percent from 3 cases", response.schemeDescription());
     }
 
     private Authentication auth(String role) { return new UsernamePasswordAuthenticationToken(userId, null, List.of(new SimpleGrantedAuthority(role))); }

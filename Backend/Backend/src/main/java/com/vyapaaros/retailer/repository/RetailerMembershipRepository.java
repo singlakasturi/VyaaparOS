@@ -26,4 +26,7 @@ public interface RetailerMembershipRepository
         UUID retailerId,
         RetailerMembershipRole role
     );
+
+    @EntityGraph(attributePaths = "user")
+    Optional<RetailerMembership> findFirstByRetailerIdAndRole(UUID retailerId, RetailerMembershipRole role);
 }

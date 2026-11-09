@@ -16,8 +16,14 @@ public class ProductMatchingService {
 
     @Transactional(readOnly = true)
     public Match match(String description) {
+        return match(description, null);
+    }
+
+    @Transactional(readOnly = true)
+    public Match match(String description, UUID distributorId) {
         String query = normalize(description);
-        List<Product> products = repository.findAll().stream()
+        List<Product> products = (distributorId == null ? repository.findAll()
+                : repository.findManagedByDistributor(distributorId, null, true)).stream()
             .filter(Product::isActive)
             .filter(product -> product.getCategory().isActive())
             .toList();
@@ -26,6 +32,27 @@ public class ProductMatchingService {
                 || normalize(product.getName()).equals(query))
             .toList();
         if (exact.size() == 1) return Match.matched(exact.get(0));
+        if (query.contains("biscuit") && (query.contains("chhota") || query.contains("small"))) {
+            List<Product> smallOptions = products.stream()
+                .filter(product -> normalize(product.getName()).contains("biscuit"))
+                .filter(product -> product.getUnitQuantity() != null
+                    && product.getUnitQuantity().compareTo(java.math.BigDecimal.valueOf(100)) <= 0)
+                .toList();
+            if (smallOptions.size() > 1) return Match.ambiguous(smallOptions);
+        }
+        if ((query.contains("detergent") || query.contains("washing powder"))
+            && !query.contains("1 kg") && !query.contains("1kg") && !query.contains("1 kilo")
+            && !query.contains("500")) {
+            List<Product> sizes = products.stream()
+                .filter(product -> normalize(product.getName()).contains("detergent")
+                    || normalize(product.getName()).contains("washing"))
+                .toList();
+            if (sizes.size() > 1) return Match.ambiguous(sizes);
+        }
+        if ((query.contains("tea") || query.contains("chai")) && !query.contains("250")) {
+            List<Product> sizes = products.stream().filter(product -> normalize(product.getName()).contains("tea")).toList();
+            if (sizes.size() > 1) return Match.ambiguous(sizes);
+        }
         List<Product> candidates = products.stream()
             .filter(product -> matches(product, query))
             .toList();
@@ -49,18 +76,30 @@ public class ProductMatchingService {
         if ((query.contains("chai") || query.contains("tea")) && name.contains("tea")) {
             return sizeMatches(product, query);
         }
-        return name.contains(query) || sku.contains(query) || description.contains(query) || brand.contains(query);
+        if (query.contains("chhota") || query.contains("small")) {
+            if (product.getUnitQuantity() == null || product.getUnitName() == null
+                || product.getUnitQuantity().compareTo(java.math.BigDecimal.valueOf(100)) > 0) return false;
+        }
+        Set<String> queryTerms = new HashSet<>(Arrays.asList(query.split(" ")));
+        Set<String> productTerms = new HashSet<>(Arrays.asList((name + " " + sku + " " + description + " " + brand).split(" ")));
+        queryTerms.removeIf(term -> term.length() < 2 || Set.of("the", "and", "for", "case", "cases", "peti", "carton", "box", "boxes", "piece", "pieces", "pcs", "order", "please").contains(term));
+        if (queryTerms.isEmpty()) return false;
+        long matchingTerms = queryTerms.stream().filter(productTerms::contains).count();
+        return matchingTerms == queryTerms.size();
     }
 
     private boolean sizeMatches(Product product, String query) {
-        if (query.contains("250")) return product.getUnitQuantity().intValue() == 250
-            && product.getUnitName().equalsIgnoreCase("g");
+        if (query.contains("250")) return product.getUnitQuantity() != null && product.getUnitName() != null
+            && product.getUnitQuantity().intValue() == 250
+            && Set.of("g", "gm", "gram", "grams").contains(product.getUnitName().toLowerCase(Locale.ROOT));
         if (query.contains("1 kilo") || query.contains("1kg") || query.contains("1 kg")) {
-            return product.getUnitQuantity().intValue() == 1
-                && product.getUnitName().equalsIgnoreCase("kg");
+            return product.getUnitQuantity() != null && product.getUnitName() != null
+                && ((product.getUnitQuantity().intValue() == 1 && product.getUnitName().equalsIgnoreCase("kg"))
+                || (product.getUnitQuantity().intValue() == 1000
+                    && Set.of("g", "gm", "gram", "grams").contains(product.getUnitName().toLowerCase(Locale.ROOT))));
         }
         if (query.contains("chhota") || query.contains("small")) {
-            return product.getUnitQuantity().intValue() <= 100;
+            return product.getUnitQuantity() != null && product.getUnitQuantity().intValue() <= 100;
         }
         return true;
     }

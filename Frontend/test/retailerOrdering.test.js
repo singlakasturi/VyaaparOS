@@ -1,24 +1,44 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { addRetailerCartProduct, createOfflineRetailerOrder, createOrderSubmitter, getIndicativeCartTotals, getOrderHistoryRows, isCartLineAvailable, loadRetailerCart, loadRetailerCatalogue, removeRetailerCartItem, updateOfflineCartItems, updateRetailerCartItem, validateCartAgainstCatalogue } from '../src/services/retailerOrdering.js'
+import { addRetailerCartProduct, canRequestCancellation, canRequestReturn, createOfflineRetailerOrder, createOrderSubmitter, getIndicativeCartTotals, getOrderHistoryRows, isCartLineAvailable, loadRetailerCart, loadRetailerCatalogue, removeRetailerCartItem, updateOfflineCartItems, updateRetailerCartItem, validateCartAgainstCatalogue } from '../src/services/retailerOrdering.js'
+import { fetchProduct, fetchProducts } from '../src/services/catalog.js'
+
+test('catalog API supports retailer-scoped detail and paginated search filters', async () => {
+  const calls = []
+  globalThis.window = { sessionStorage: { getItem: () => 'token' }, dispatchEvent() {} }
+  globalThis.fetch = async (url) => { calls.push(url); return { ok: true, status: 200, headers: { get: () => 'application/json' }, json: async () => ({}) } }
+  await fetchProducts({ retailerId: 'r1', q: 'tea 250', category: 'drinks', page: 3, size: 20 })
+  await fetchProduct('p1', 'r1')
+  assert.match(calls[0], /retailerId=r1.*category=drinks.*q=tea\+250.*page=3.*size=20/)
+  assert.equal(calls[1], 'http://localhost:8080/api/catalog/products/p1?retailerId=r1')
+})
 
 test('catalogue requests selected retailer, category and search and normalizes server pages', async () => {
   let request
-  const result = await loadRetailerCatalogue({ retailerId: 'retailer-1', category: 'dairy', query: ' milk ', fetchCategories: async () => [{ id: 'dairy', name: 'Dairy' }], fetchProducts: async (options) => { request = options; return { content: [{ id: 'p1' }] } } })
-  assert.deepEqual(request, { retailerId: 'retailer-1', category: 'dairy', q: 'milk', size: 100 })
+  const result = await loadRetailerCatalogue({ retailerId: 'retailer-1', category: 'dairy', query: ' milk ', page: 2, fetchCategories: async () => [{ id: 'dairy', name: 'Dairy' }], fetchProducts: async (options) => { request = options; return { content: [{ id: 'p1' }], number: 2, totalPages: 4, hasNext: true } } })
+  assert.deepEqual(request, { retailerId: 'retailer-1', category: 'dairy', q: 'milk', page: 2, size: 20 })
   assert.equal(result.products[0].id, 'p1')
   assert.equal(result.categories[0].name, 'Dairy')
+  assert.equal(result.hasNext, true)
+  assert.equal(result.totalPages, 4)
 })
 
 test('catalogue loading handles an empty server page', async () => {
   const result = await loadRetailerCatalogue({ retailerId: 'r', category: '', query: '', fetchCategories: async () => null, fetchProducts: async () => ({}) })
-  assert.deepEqual(result, { categories: [], products: [] })
+  assert.deepEqual(result, { categories: [], products: [], page: 0, totalPages: 1, hasNext: false })
 })
 
 test('catalogue falls back to a cached catalogue when backend is unreachable', async () => {
-  const result = await loadRetailerCatalogue({ retailerId: 'r', category: 'food', query: 'tea', fetchCategories: async () => { throw new Error('offline') }, fetchProducts: async () => [], getCachedCatalog: async () => ({ categories: [{ name: 'Food' }], products: [{ name: 'Tea 250 g', category: { name: 'Food' } }, { name: 'Rice', category: { name: 'Food' } }] }) })
+  const result = await loadRetailerCatalogue({ retailerId: 'r', category: 'food', query: 'tea', fetchCategories: async () => { const error = new Error('offline'); error.status = 0; throw error }, fetchProducts: async () => [], getCachedCatalog: async () => ({ categories: [{ name: 'Food' }], products: [{ name: 'Tea 250 g', category: { name: 'Food' } }, { name: 'Rice', category: { name: 'Food' } }] }) })
   assert.equal(result.stale, true)
   assert.deepEqual(result.products.map((product) => product.name), ['Tea 250 g'])
+})
+
+test('catalogue never uses cached data after a server access denial', async () => {
+  let cacheRead = false
+  const error = new Error('No active distributor'); error.status = 403
+  await assert.rejects(loadRetailerCatalogue({ retailerId: 'r', category: '', query: '', fetchCategories: async () => { throw error }, fetchProducts: async () => [], getCachedCatalog: async () => { cacheRead = true; return { products: [{ id: 'old' }] } } }), /No active distributor/)
+  assert.equal(cacheRead, false)
 })
 
 test('indicative totals add server-calculated no-scheme, free-case and slab-discount lines', () => {
@@ -89,7 +109,18 @@ test('checkout clears the badge only after confirmed success and keys retries to
 })
 
 test('order history rows preserve server status, references and totals', () => {
-  assert.deepEqual(getOrderHistoryRows([{ id: '12345678-abcd', status: 'CREDIT_HOLD', orderNumber: 'ORD-8', finalAmount: 250, currency: 'INR', items: [{}, {}] }]), [{ id: '12345678-abcd', reference: 'ORD-8', status: 'CREDIT_HOLD', createdAt: undefined, itemCount: 2, amount: 250, currency: 'INR' }])
+  assert.deepEqual(getOrderHistoryRows([{ id: '12345678-abcd', status: 'CREDIT_HOLD', fulfillmentStatus: 'SHIPPED', orderNumber: 'ORD-8', finalAmount: 250, currency: 'INR', items: [{}, {}] }]), [{ id: '12345678-abcd', reference: 'ORD-8', status: 'CREDIT_HOLD', fulfillmentStatus: 'SHIPPED', createdAt: undefined, itemCount: 2, amount: 250, currency: 'INR' }])
+})
+
+test('retailer request controls only allow eligible cancellation and delivered return requests', () => {
+  const submitted={status:'SUBMITTED',fulfillmentStatus:'PREPARING'}
+  const delivered={status:'APPROVED',fulfillmentStatus:'DELIVERED'}
+  assert.equal(canRequestCancellation(submitted,[]),true)
+  assert.equal(canRequestCancellation({...submitted,fulfillmentStatus:'SHIPPED'},[]),false)
+  assert.equal(canRequestCancellation(submitted,[{requestType:'CANCELLATION',status:'PENDING'}]),false)
+  assert.equal(canRequestReturn(delivered,[]),true)
+  assert.equal(canRequestReturn({...delivered,fulfillmentStatus:'SHIPPED'},[]),false)
+  assert.equal(canRequestReturn(delivered,[{requestType:'RETURN',status:'APPROVED'}]),false)
 })
 
 test('offline retailer cart supports multiple products, quantity updates, and a complete stable local order', () => {
